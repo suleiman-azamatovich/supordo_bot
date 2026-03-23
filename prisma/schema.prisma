@@ -125,11 +125,13 @@ model Rental {
   boardId      Int
   tariffId     Int?
   sellerUserId Int?
-  clientName   String?
-  startAt      DateTime?
-  endAt        DateTime?
-  status       RentalStatus @default(CREATED)
-  createdAt    DateTime     @default(now())
+  clientName    String?
+  startAt       DateTime?
+  endAt         DateTime?
+  extraMinutes  Int          @default(0)
+  pendingExtraMinutes Int?
+  status        RentalStatus @default(CREATED)
+  createdAt     DateTime     @default(now())
 
   user   User   @relation("RentalClient", fields: [userId], references: [id])
   seller User?  @relation("RentalSeller", fields: [sellerUserId], references: [id])

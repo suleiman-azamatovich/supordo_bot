@@ -14,7 +14,7 @@ async function main() {
   const spot = await prisma.spot.upsert({
     where: { id: 1 },
     update: {},
-    create: { id: 1, name: "Пляж «Чолпон-Ата»" },
+    create: { id: 1, name: "Ала-Арчинское водохранилище" },
   });
   console.log(`Spot: ${spot.name}`);
 

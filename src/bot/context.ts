@@ -19,9 +19,13 @@ export interface SessionData {
   /** admin↔client chat: admin writing to a client about a proof */
   chatWithClientTgId?: number;
   chatProofId?: number;
+  /** admin↔client chat about rental extension */
+  chatRentalId?: number;
   /** client replying to admin about a proof */
   chatWithAdminTgId?: number;
   chatReplyProofId?: number;
+  /** client replying to admin about extension */
+  chatReplyRentalId?: number;
   /** tracked bot message IDs for auto-cleanup */
   lastBotMsgIds?: number[];
 }

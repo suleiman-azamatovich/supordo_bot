@@ -37,7 +37,8 @@ export function startExpiryChecker(api: Api) {
       for (const rental of activeRentals) {
         if (!rental.startAt || !rental.tariff) continue;
 
-        const durationMs = rental.tariff.durationMinutes * 60_000;
+        const totalMinutes = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
+        const durationMs = totalMinutes * 60_000;
         const expiresAt = new Date(rental.startAt.getTime() + durationMs);
         const remainingMs = expiresAt.getTime() - now.getTime();
         const chatId = Number(rental.user.tgId);

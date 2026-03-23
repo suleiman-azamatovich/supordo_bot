@@ -25,5 +25,7 @@ export function mainMenuKeyboard(role: Role): InlineKeyboard {
     kb.text("📊 Отчёты", "admin:reports").row();
   }
 
+  kb.text("🗑 Очистить чат", "clear:chat").row();
+
   return kb;
 }

@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma";
 import { RentalStatus } from "@prisma/client";
-import { fmtPrice } from "../ui/helpers";
+import { fmtPrice, fmtDuration } from "../ui/helpers";
 
 /** Bishkek start-of-day */
 function startOfDayBishkek(date: Date = new Date()): Date {
@@ -29,7 +29,8 @@ export async function todayReport() {
 
   const rentals = await prisma.rental.findMany({
     where: { createdAt: { gte: since } },
-    include: { tariff: true },
+    include: { tariff: true, board: true, user: true, seller: true },
+    orderBy: { createdAt: "desc" },
   });
 
   const completed = rentals.filter((r) =>
@@ -40,7 +41,7 @@ export async function todayReport() {
   const cancelled = rentals.filter((r) => r.status === RentalStatus.CANCELLED).length;
   const avg = count > 0 ? Math.round(revenue / count) : 0;
 
-  return { revenue, count, cancelled, avg };
+  return { revenue, count, cancelled, avg, rentals };
 }
 
 export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>): string {
@@ -48,7 +49,33 @@ export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>)
   text += `💰 Выручка: <b>${fmtPrice(data.revenue)}</b>\n`;
   text += `🏄 Аренд: <b>${data.count}</b>\n`;
   text += `💵 Средний чек: <b>${data.avg > 0 ? fmtPrice(data.avg) : "—"}</b>\n`;
-  text += `❌ Отмен: <b>${data.cancelled}</b>`;
+  text += `❌ Отмен: <b>${data.cancelled}</b>\n\n`;
+
+  if (data.rentals.length > 0) {
+    text += `<b>Список аренд:</b>\n`;
+    for (const r of data.rentals) {
+      if (r.status === RentalStatus.CANCELLED) continue;
+      const client = r.clientName ?? r.user.name;
+      const source = r.sellerUserId ? "👤 админ" : "📱 клиент";
+      const tariffInfo = r.tariff ? `${fmtDuration(r.tariff.durationMinutes)}` : "";
+      const price = r.tariff ? fmtPrice(r.tariff.price) : "—";
+
+      const statusMap: Record<string, string> = {
+        RENTED: "🔴 в аренде",
+        WAIT_RETURN: "⏰ возврат",
+        RETURNED: "✅ завершена",
+        CREATED: "⏳ создана",
+        WAIT_PAYMENT: "💳 ожидает оплаты",
+        WAIT_ADMIN: "🔍 проверка",
+      };
+      const statusText = statusMap[r.status] ?? r.status;
+
+      text += `\n▸ <b>${r.board.code}</b> → ${client}\n`;
+      text += `   ${tariffInfo} · ${price} · ${statusText}\n`;
+      text += `   ${source}\n`;
+    }
+  }
+
   return text;
 }
 

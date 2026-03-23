@@ -48,7 +48,8 @@ sellerModule.callbackQuery(/^seller:rented(:(\d+))?$/, async (ctx) => {
     if (r.startAt) {
       text += `   ⏱ Старт: ${fmtDate(r.startAt)}\n`;
       if (r.tariff) {
-        const endAt = new Date(r.startAt.getTime() + r.tariff.durationMinutes * 60_000);
+        const totalMin = r.tariff.durationMinutes + (r.extraMinutes ?? 0);
+        const endAt = new Date(r.startAt.getTime() + totalMin * 60_000);
         const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
         if (isExpired) {
           text += `   ⏰ <b>Время вышло! Ожидает возврата</b>\n`;
@@ -154,7 +155,7 @@ sellerModule.callbackQuery(/^seller:today(:(\d+))?$/, async (ctx) => {
 
   const rentals = await prisma.rental.findMany({
     where: { spotId, createdAt: { gte: todayStart } },
-    include: { board: true, user: true },
+    include: { board: true, user: true, tariff: true },
     orderBy: { createdAt: "desc" },
   });
 
@@ -165,7 +166,14 @@ sellerModule.callbackQuery(/^seller:today(:(\d+))?$/, async (ctx) => {
     text += "Нет записей за сегодня.";
   } else {
     for (const r of paged.items) {
-      text += `#${r.id} ${r.board.code} → ${r.clientName ?? r.user.name} [${r.status}]\n`;
+      const client = r.clientName ?? r.user.name;
+      const source = r.sellerUserId ? "👤 админ" : "📱 клиент";
+      const statusMap: Record<string, string> = {
+        RENTED: "🔴", WAIT_RETURN: "⏰", RETURNED: "✅", CANCELLED: "❌", CREATED: "⏳", WAIT_PAYMENT: "💳", WAIT_ADMIN: "🔍",
+      };
+      const icon = statusMap[r.status] ?? "❓";
+      const price = r.tariff ? fmtPrice(r.tariff.price) : "";
+      text += `${icon} <b>${r.board.code}</b> → ${client} · ${price} · ${source}\n`;
     }
   }
 
