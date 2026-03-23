@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CLIENT
+  SELLER
+  ADMIN
+}
+
+enum BoardStatus {
+  AVAILABLE
+  BOOKED
+  RENTED
+  SERVICE
+}
+
+enum BookingStatus {
+  DRAFT
+  WAIT_PAYMENT
+  WAIT_ADMIN
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+enum RentalStatus {
+  CREATED
+  WAIT_PAYMENT
+  WAIT_ADMIN
+  RENTED
+  WAIT_RETURN
+  RETURNED
+  CANCELLED
+}
+
+enum PaymentProofStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum PaymentProofKind {
+  BOOKING
+  RENTAL
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  tgId      BigInt   @unique
+  role      Role     @default(CLIENT)
+  name      String
+  phone     String?
+  spotId    Int?
+  createdAt DateTime @default(now())
+
+  spot          Spot?          @relation(fields: [spotId], references: [id])
+  bookings      Booking[]
+  rentals       Rental[]       @relation("RentalClient")
+  sellerRentals Rental[]       @relation("RentalSeller")
+  paymentProofs PaymentProof[] @relation("PaymentCreator")
+  reviewedProofs PaymentProof[] @relation("PaymentReviewer")
+  auditLogs     AuditLog[]
+  notifications Notification[]
+}
+
+model Spot {
+  id     Int    @id @default(autoincrement())
+  name   String
+  boards  Board[]
+  tariffs Tariff[]
+  sellers User[]
+  bookings Booking[]
+  rentals  Rental[]
+}
+
+model Board {
+  id     Int         @id @default(autoincrement())
+  spotId Int
+  code   String      @unique
+  title  String
+  status BoardStatus @default(AVAILABLE)
+
+  spot     Spot      @relation(fields: [spotId], references: [id])
+  bookings Booking[]
+  rentals  Rental[]
+}
+
+model Tariff {
+  id              Int    @id @default(autoincrement())
+  spotId          Int
+  name            String
+  durationMinutes Int
+  price           Int
+
+  spot    Spot     @relation(fields: [spotId], references: [id])
+  rentals Rental[]
+}
+
+model Booking {
+  id      Int           @id @default(autoincrement())
+  userId  Int
+  spotId  Int
+  boardId Int?
+  tariffId Int?
+  startAt DateTime
+  endAt   DateTime
+  status  BookingStatus @default(DRAFT)
+  createdAt DateTime    @default(now())
+
+  user  User   @relation(fields: [userId], references: [id])
+  spot  Spot   @relation(fields: [spotId], references: [id])
+  board Board? @relation(fields: [boardId], references: [id])
+}
+
+model Rental {
+  id           Int          @id @default(autoincrement())
+  userId       Int
+  spotId       Int
+  boardId      Int
+  tariffId     Int?
+  sellerUserId Int?
+  clientName   String?
+  startAt      DateTime?
+  endAt        DateTime?
+  status       RentalStatus @default(CREATED)
+  createdAt    DateTime     @default(now())
+
+  user   User   @relation("RentalClient", fields: [userId], references: [id])
+  seller User?  @relation("RentalSeller", fields: [sellerUserId], references: [id])
+  spot   Spot   @relation(fields: [spotId], references: [id])
+  board  Board  @relation(fields: [boardId], references: [id])
+  tariff Tariff? @relation(fields: [tariffId], references: [id])
+}
+
+model PaymentProof {
+  id         Int                @id @default(autoincrement())
+  kind       PaymentProofKind
+  refId      Int
+  amount     Int
+  fileId     String?
+  text       String?
+  status     PaymentProofStatus @default(SUBMITTED)
+  createdAt  DateTime           @default(now())
+  userId     Int
+  reviewedBy Int?
+
+  user     User  @relation("PaymentCreator", fields: [userId], references: [id])
+  reviewer User? @relation("PaymentReviewer", fields: [reviewedBy], references: [id])
+}
+
+model AuditLog {
+  id           Int      @id @default(autoincrement())
+  actorUserId  Int
+  entityType   String
+  entityId     Int
+  action       String
+  metaJson     Json?
+  createdAt    DateTime @default(now())
+
+  actor User @relation(fields: [actorUserId], references: [id])
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  text      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
