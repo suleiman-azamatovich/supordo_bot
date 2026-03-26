@@ -15,12 +15,11 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
     ctx.from.username ||
     "User";
 
-  let user = await prisma.user.findUnique({ where: { tgId } });
-  if (!user) {
-    user = await prisma.user.create({
-      data: { tgId, name, role: Role.CLIENT },
-    });
-  }
+  let user = await prisma.user.upsert({
+    where: { tgId },
+    update: {},
+    create: { tgId, name, role: Role.CLIENT },
+  });
 
   ctx.dbUser = {
     id: user.id,

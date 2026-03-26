@@ -378,15 +378,20 @@ clientModule.on("message:photo", async (ctx) => {
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      await ctx.api.sendPhoto(adminTgId, fileId, {
-        caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
-          .text("❌ Отклонить", `pay:reject:${proofId}`)
-          .row()
-          .text("💬 Ответить", `admin:chat_client:${proofId}`),
-      });
+      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      for (const admin of admins) {
+        try {
+          await ctx.api.sendPhoto(Number(admin.tgId), fileId, {
+            caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
+              .text("❌ Отклонить", `pay:reject:${proofId}`)
+              .row()
+              .text("💬 Ответить", `admin:chat_client:${proofId}`),
+          });
+        } catch { }
+      }
       await ctx.reply("✅ Фото отправлено администратору.");
     } catch {
       await ctx.reply("⚠️ Не удалось отправить фото.");
@@ -517,8 +522,15 @@ clientModule.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
   }
 
   const kb = new InlineKeyboard();
-  // Add extend buttons for active rentals (only if no pending request)
+  // Add extend and close overdue buttons for active rentals
   for (const r of paged.items) {
+    if (r.status === "WAIT_RETURN") {
+      // Show overdue info and close overdue button
+      const overdue = rentalService.getOverdueMinutes(r);
+      if (overdue > 0) {
+        kb.text(`🔄 Закрыть просрочку ${r.board.code} (${fmtDuration(overdue)})`, `client:close_overdue:${r.id}`).row();
+      }
+    }
     if ((r.status === "RENTED" || r.status === "WAIT_RETURN") && !r.pendingExtraMinutes) {
       kb.text(`⏱ Продлить ${r.board.code}`, `client:extend:${r.id}`).row();
     }
@@ -527,6 +539,55 @@ clientModule.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
   kb.row().text("⬅️ Меню", "back:menu");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+});
+
+// ──────── Client close overdue ────────
+clientModule.callbackQuery(/^client:close_overdue:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+
+  if (rental.userId !== ctx.dbUser!.id) {
+    return ctx.editMessageText("⛔ Это не ваша аренда.");
+  }
+
+  try {
+    const result = await rentalService.closeOverdue(rentalId, ctx.dbUser!.id);
+
+    await ctx.editMessageText(
+      `✅ Просрочка закрыта!\n\n` +
+      `🏄 Доска: <b>${rental.board.code}</b>\n` +
+      `⏱ Покрыто: <b>${fmtDuration(result.closedMinutes)}</b>\n` +
+      `💰 Доплата: <b>${fmtPrice(result.overdueCost)}</b>\n` +
+      `Аренда снова активна.`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("📋 Мои аренды", "client:my_list")
+          .text("⬅️ Меню", "back:menu"),
+      }
+    );
+
+    // Notify admins
+    const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+    for (const admin of admins) {
+      try {
+        await ctx.api.sendMessage(
+          Number(admin.tgId),
+          `🔄 Клиент <b>${ctx.dbUser!.name}</b> закрыл просрочку по доске <b>${rental.board.code}</b> (${fmtDuration(result.closedMinutes)}).`,
+          { parse_mode: "HTML" }
+        );
+      } catch { }
+    }
+  } catch (e: any) {
+    await ctx.editMessageText(`⚠️ ${e.message}`, {
+      reply_markup: new InlineKeyboard().text("📋 Мои аренды", "client:my_list"),
+    });
+  }
 });
 
 // ──────── Client extend rental — pick duration ────────
@@ -560,7 +621,7 @@ clientModule.callbackQuery(/^client:extend:(\d+)$/, async (ctx) => {
   for (const t of tariffs) {
     kb.text(
       `+${fmtDuration(t.durationMinutes)} — ${fmtPrice(t.price)}`,
-      `client:extend_confirm:${rentalId}:${t.durationMinutes}`
+      `client:extend_confirm:${rentalId}:${t.id}`
     ).row();
   }
   kb.text("⬅️ Назад", "client:my_list").text("⬅️ Меню", "back:menu");
@@ -572,7 +633,10 @@ clientModule.callbackQuery(/^client:extend:(\d+)$/, async (ctx) => {
 clientModule.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
-  const minutes = parseInt(ctx.match[2]);
+  const tariffId = parseInt(ctx.match[2]);
+
+  const extensionTariff = await prisma.tariff.findUniqueOrThrow({ where: { id: tariffId } });
+  const minutes = extensionTariff.durationMinutes;
 
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
@@ -589,7 +653,7 @@ clientModule.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ctx) =>
     await ctx.editMessageText(
       `⏳ <b>Запрос на продление отправлен</b>\n\n` +
       `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n\n` +
+      `⏱ Продление: <b>+${fmtDuration(minutes)}</b> — ${fmtPrice(extensionTariff.price)}\n\n` +
       `Ожидайте подтверждения администратора.`,
       {
         parse_mode: "HTML",
@@ -642,12 +706,12 @@ clientModule.callbackQuery(/^client:chat_ext:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
-  const admin = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-  if (!admin) {
+  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  if (admins.length === 0) {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
 
-  ctx.session.chatWithAdminTgId = Number(admin.tgId);
+  ctx.session.chatWithAdminTgId = -1; // flag: chat active (broadcasts to all admins)
   ctx.session.chatReplyRentalId = rentalId;
   ctx.session.chatReplyProofId = undefined;
 
@@ -672,13 +736,13 @@ clientModule.callbackQuery(/^client:chat_admin:(\d+)$/, async (ctx) => {
     where: { id: proofId },
   });
 
-  // Find an admin to reply to
-  const admin = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-  if (!admin) {
+  // Find admins to reply to
+  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  if (admins.length === 0) {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
 
-  ctx.session.chatWithAdminTgId = Number(admin.tgId);
+  ctx.session.chatWithAdminTgId = -1; // flag: chat active (broadcasts to all admins)
   ctx.session.chatReplyProofId = proofId;
 
   await ctx.reply(
@@ -709,23 +773,27 @@ clientModule.callbackQuery("client:end_chat", async (ctx) => {
 clientModule.on("message:text", async (ctx, next) => {
   // Chat with admin about payment
   if (ctx.session.chatWithAdminTgId && ctx.session.chatReplyProofId) {
-    const adminTgId = ctx.session.chatWithAdminTgId;
     const proofId = ctx.session.chatReplyProofId;
 
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      await ctx.api.sendMessage(
-        adminTgId,
-        `💬 <b>${userName}</b> (оплата #${proofId}):\n\n${ctx.message.text}`,
-        {
-          parse_mode: "HTML",
-          reply_markup: new InlineKeyboard()
-            .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
-            .text("❌ Отклонить", `pay:reject:${proofId}`)
-            .row()
-            .text("💬 Ответить", `admin:chat_client:${proofId}`),
-        }
-      );
+      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      for (const admin of admins) {
+        try {
+          await ctx.api.sendMessage(
+            Number(admin.tgId),
+            `💬 <b>${userName}</b> (оплата #${proofId}):\n\n${ctx.message.text}`,
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard()
+                .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
+                .text("❌ Отклонить", `pay:reject:${proofId}`)
+                .row()
+                .text("💬 Ответить", `admin:chat_client:${proofId}`),
+            }
+          );
+        } catch { }
+      }
       await ctx.reply("✅ Сообщение отправлено администратору.", {
         reply_markup: new InlineKeyboard()
           .text("🛑 Завершить чат", "client:end_chat"),
@@ -738,23 +806,27 @@ clientModule.on("message:text", async (ctx, next) => {
 
   // Chat with admin about extension
   if (ctx.session.chatWithAdminTgId && ctx.session.chatReplyRentalId) {
-    const adminTgId = ctx.session.chatWithAdminTgId;
     const rentalId = ctx.session.chatReplyRentalId;
 
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      await ctx.api.sendMessage(
-        adminTgId,
-        `💬 <b>${userName}</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
-        {
-          parse_mode: "HTML",
-          reply_markup: new InlineKeyboard()
-            .text("✅ Подтвердить", `ext:approve:${rentalId}`)
-            .text("❌ Отклонить", `ext:reject:${rentalId}`)
-            .row()
-            .text("💬 Ответить", `ext:chat:${rentalId}`),
-        }
-      );
+      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      for (const admin of admins) {
+        try {
+          await ctx.api.sendMessage(
+            Number(admin.tgId),
+            `💬 <b>${userName}</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard()
+                .text("✅ Подтвердить", `ext:approve:${rentalId}`)
+                .text("❌ Отклонить", `ext:reject:${rentalId}`)
+                .row()
+                .text("💬 Ответить", `ext:chat:${rentalId}`),
+            }
+          );
+        } catch { }
+      }
       await ctx.reply("✅ Сообщение отправлено администратору.", {
         reply_markup: new InlineKeyboard()
           .text("🛑 Завершить чат", "client:end_chat"),

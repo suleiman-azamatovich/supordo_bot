@@ -28,9 +28,10 @@ export async function approvePayment(proofId: number, adminUserId: number) {
 
   if (proof.kind === PaymentProofKind.RENTAL) {
     await rentalService.approveRental(proof.refId, adminUserId);
-  } else {
+  } else if (proof.kind === PaymentProofKind.BOOKING) {
     await bookingService.approveBooking(proof.refId, adminUserId);
   }
+  // OVERDUE: just mark as approved, rental already RETURNED
 
   return proof;
 }
@@ -49,12 +50,13 @@ export async function rejectPayment(proofId: number, adminUserId: number) {
       where: { id: proof.refId },
       data: { status: "WAIT_PAYMENT" },
     });
-  } else {
+  } else if (proof.kind === PaymentProofKind.BOOKING) {
     await prisma.booking.update({
       where: { id: proof.refId },
       data: { status: "WAIT_PAYMENT" },
     });
   }
+  // OVERDUE: rejecting = waiving the charge, no status changes
 
   return proof;
 }

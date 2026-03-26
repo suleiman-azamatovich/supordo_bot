@@ -1,5 +1,4 @@
 import { Context, SessionFlavor } from "grammy";
-import { ConversationFlavor } from "@grammyjs/conversations";
 import { Role } from "@prisma/client";
 
 export interface SessionData {
@@ -31,8 +30,7 @@ export interface SessionData {
 }
 
 export type BotContext = Context &
-  SessionFlavor<SessionData> &
-  ConversationFlavor<Context> & {
+  SessionFlavor<SessionData> & {
     /** populated by auth middleware */
     dbUser?: {
       id: number;

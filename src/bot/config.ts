@@ -11,7 +11,11 @@ function required(key: string): string {
 export const config = {
   BOT_TOKEN: required("BOT_TOKEN"),
   DATABASE_URL: required("DATABASE_URL"),
-  ADMIN_TG_ID: required("ADMIN_TG_ID"),
+  /** Comma-separated list of admin Telegram IDs. Falls back to single ADMIN_TG_ID for compatibility. */
+  ADMIN_TG_IDS: (process.env.ADMIN_TG_IDS ?? process.env.ADMIN_TG_ID ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
   MBANK_QR_FILE_ID: process.env.MBANK_QR_FILE_ID ?? "",
   LOG_LEVEL: process.env.LOG_LEVEL ?? "info",
 };

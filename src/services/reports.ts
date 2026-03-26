@@ -36,7 +36,7 @@ export async function todayReport() {
   const completed = rentals.filter((r) =>
     (r.status === RentalStatus.RETURNED || r.status === RentalStatus.RENTED || r.status === RentalStatus.WAIT_RETURN)
   );
-  const revenue = completed.reduce((s, r) => s + (r.tariff?.price ?? 0), 0);
+  const revenue = completed.reduce((s, r) => s + (r.tariff?.price ?? 0) + (r.extraCost ?? 0), 0);
   const count = completed.length;
   const cancelled = rentals.filter((r) => r.status === RentalStatus.CANCELLED).length;
   const avg = count > 0 ? Math.round(revenue / count) : 0;
@@ -59,6 +59,7 @@ export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>)
       const source = r.sellerUserId ? "👤 админ" : "📱 клиент";
       const tariffInfo = r.tariff ? `${fmtDuration(r.tariff.durationMinutes)}` : "";
       const price = r.tariff ? fmtPrice(r.tariff.price) : "—";
+      const extra = r.extraMinutes ?? 0;
 
       const statusMap: Record<string, string> = {
         RENTED: "🔴 в аренде",
@@ -72,6 +73,26 @@ export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>)
 
       text += `\n▸ <b>${r.board.code}</b> → ${client}\n`;
       text += `   ${tariffInfo} · ${price} · ${statusText}\n`;
+      if (extra > 0) {
+        text += `   ⏱ +${fmtDuration(extra)} продления\n`;
+      }
+
+      // Overdue info for returned or active rentals
+      if (r.status === RentalStatus.RETURNED && r.startAt && r.endAt && r.tariff) {
+        const totalPaid = r.tariff.durationMinutes + extra;
+        const actual = Math.ceil((r.endAt.getTime() - r.startAt.getTime()) / 60_000);
+        const overdue = Math.max(0, actual - totalPaid);
+        if (overdue > 0) {
+          text += `   ⚠️ просрочка: ${fmtDuration(overdue)}\n`;
+        }
+      } else if ((r.status === RentalStatus.WAIT_RETURN || r.status === RentalStatus.RENTED) && r.startAt && r.tariff) {
+        const totalPaid = r.tariff.durationMinutes + extra;
+        const actual = Math.ceil((Date.now() - r.startAt.getTime()) / 60_000);
+        const overdue = Math.max(0, actual - totalPaid);
+        if (overdue > 0) {
+          text += `   ⚠️ просрочка: ${fmtDuration(overdue)}\n`;
+        }
+      }
       text += `   ${source}\n`;
     }
   }
@@ -106,7 +127,7 @@ export async function weekReport() {
     const entry = dayMap.get(key);
     if (entry) {
       entry.count++;
-      entry.revenue += r.tariff?.price ?? 0;
+      entry.revenue += (r.tariff?.price ?? 0) + (r.extraCost ?? 0);
     }
   }
 
@@ -154,7 +175,7 @@ export async function tariffReport(days: number = 7) {
     if (!r.tariff) continue;
     const entry = map.get(r.tariff.id) ?? { name: r.tariff.name, price: r.tariff.price, count: 0, revenue: 0 };
     entry.count++;
-    entry.revenue += r.tariff.price;
+    entry.revenue += r.tariff.price + (r.extraCost ?? 0);
     map.set(r.tariff.id, entry);
   }
 

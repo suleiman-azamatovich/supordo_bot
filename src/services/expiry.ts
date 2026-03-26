@@ -6,12 +6,18 @@ import { notify } from "./notify";
 // Множество ID аренд, для которых уже отправлено предупреждение «скоро конец»
 const warnedRentals = new Set<number>();
 
+/** Timeout for unpaid rentals (15 minutes) */
+const UNPAID_TIMEOUT_MS = 15 * 60_000;
+
 export function startExpiryChecker(api: Api) {
   const INTERVAL_MS = 10_000; // 10 секунд (чаще для отладки)
 
   async function tick() {
     try {
       const now = new Date();
+
+      // --- Cancel unpaid rentals that have been stuck for too long ---
+      await cancelStaleRentals(api, now);
 
       const activeRentals = await prisma.rental.findMany({
         where: {
@@ -132,5 +138,45 @@ async function notifySellers(api: Api, spotId: number, text: string) {
     }
   } catch (e) {
     console.error("[expiry] Ошибка уведомления продавцов:", e);
+  }
+}
+
+/** Cancel rentals stuck in CREATED/WAIT_PAYMENT for longer than UNPAID_TIMEOUT_MS */
+async function cancelStaleRentals(api: Api, now: Date) {
+  const cutoff = new Date(now.getTime() - UNPAID_TIMEOUT_MS);
+
+  const staleRentals = await prisma.rental.findMany({
+    where: {
+      status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT] },
+      createdAt: { lt: cutoff },
+    },
+    include: { board: true, user: true },
+  });
+
+  for (const rental of staleRentals) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.rental.update({
+          where: { id: rental.id },
+          data: { status: RentalStatus.CANCELLED, endAt: now },
+        });
+        await tx.board.update({
+          where: { id: rental.boardId },
+          data: { status: BoardStatus.AVAILABLE },
+        });
+      });
+
+      console.log(`[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) отменена — не оплачена за ${UNPAID_TIMEOUT_MS / 60_000} мин`);
+
+      try {
+        await notify(
+          api,
+          Number(rental.user.tgId),
+          `❌ Аренда доски <b>${rental.board.code}</b> автоматически отменена — не была оплачена в течение ${UNPAID_TIMEOUT_MS / 60_000} минут.`
+        );
+      } catch { }
+    } catch (e) {
+      console.error(`[expiry] Ошибка отмены stale аренды #${rental.id}:`, e);
+    }
   }
 }

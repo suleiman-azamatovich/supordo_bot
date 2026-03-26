@@ -12,6 +12,7 @@ import {
 import * as paymentService from "../services/payment";
 import * as rentalService from "../services/rental";
 import * as reports from "../services/reports";
+import * as audit from "../services/audit";
 import { notify, getNotifications } from "../services/notify";
 import { Role, BoardStatus, BookingStatus, RentalStatus, PaymentProofStatus } from "@prisma/client";
 import { config } from "../bot/config";
@@ -206,10 +207,17 @@ adminModule.callbackQuery(/^admin:payments(:(\d+))?$/, async (ctx) => {
 
   const kb = new InlineKeyboard();
   for (const p of items) {
-    text += `#${p.id} — ${p.kind} #${p.refId} — ${fmtPrice(p.amount)} — ${p.user.name}\n`;
-    kb.text(`✅ #${p.id}`, `pay:approve:${p.id}`)
-      .text(`❌ #${p.id}`, `pay:reject:${p.id}`)
-      .row();
+    const kindLabel = p.kind === "OVERDUE" ? "⚠️ Просрочка" : p.kind === "RENTAL" ? "🏄 Аренда" : "📋 Бронь";
+    text += `#${p.id} — ${kindLabel} #${p.refId} — ${fmtPrice(p.amount)} — ${p.user.name}\n`;
+    if (p.kind === "OVERDUE") {
+      kb.text(`✅ Оплачено #${p.id}`, `pay:approve:${p.id}`)
+        .text(`🔄 Списать #${p.id}`, `pay:reject:${p.id}`)
+        .row();
+    } else {
+      kb.text(`✅ #${p.id}`, `pay:approve:${p.id}`)
+        .text(`❌ #${p.id}`, `pay:reject:${p.id}`)
+        .row();
+    }
   }
   addPaginationRow(kb, page, totalPages, "admin:payments:");
   kb.row().text("⬅️ Меню", "back:menu");
@@ -609,7 +617,7 @@ adminModule.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
         }
       }
       kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
-      kb.text("❌ Отменить аренду", `admin:cancel_rental_confirm:${rental.id}`).row();
+      kb.text("✅ Завершить аренду", `admin:complete_rental_confirm:${rental.id}`).row();
     } else {
       text = `🔴 <b>${board.code}</b> — в аренде (данные не найдены)`;
     }
@@ -621,25 +629,24 @@ adminModule.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
 
-// ──────── Cancel rental confirm ────────
-adminModule.callbackQuery(/^admin:cancel_rental_confirm:(\d+)$/, async (ctx) => {
+// ──────── Complete rental confirm ────────
+adminModule.callbackQuery(/^admin:complete_rental_confirm:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
+  const receipt = await rentalService.getRentalReceipt(rentalId);
+
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
-    include: { board: true, user: true, tariff: true },
+    include: { board: true },
   });
 
-  const client = rental.clientName ?? rental.user.name;
-  let text = `⚠️ <b>Отменить аренду #${rental.id}?</b>\n\n`;
-  text += `Доска: <b>${rental.board.code}</b>\n`;
-  text += `Клиент: <b>${client}</b>\n`;
-  if (rental.tariff) text += `Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
-  text += `\n⚠️ Доска будет возвращена в доступные. Клиент получит уведомление.`;
+  let text = `⚠️ <b>Завершить аренду #${rentalId}?</b>\n\n`;
+  text += receipt;
+  text += `\n\n⚠️ Доска будет возвращена в доступные. Клиент получит итоговый отчёт.`;
 
   const kb = new InlineKeyboard()
-    .text("❌ Да, отменить", `admin:cancel_rental:${rentalId}`)
+    .text("✅ Да, завершить", `admin:complete_rental:${rentalId}`)
     .text("⬅️ Назад", `admin:board_detail:${rental.boardId}`)
     .row()
     .text("⬅️ Меню", "back:menu");
@@ -647,33 +654,31 @@ adminModule.callbackQuery(/^admin:cancel_rental_confirm:(\d+)$/, async (ctx) => 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
 
-// ──────── Cancel rental execute ────────
-adminModule.callbackQuery(/^admin:cancel_rental:(\d+)$/, async (ctx) => {
+// ──────── Complete rental execute ────────
+adminModule.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
   try {
-    const rental = await rentalService.cancelRental(rentalId, ctx.dbUser!.id);
-    const board = await prisma.board.findUniqueOrThrow({ where: { id: rental.boardId } });
+    const { receipt, overdueCost, clientMsg, clientTgId } =
+      await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
 
-    // Notify client
-    const rentalData = await prisma.rental.findUniqueOrThrow({
-      where: { id: rentalId },
-      include: { user: true },
+    let msg = `✅ Аренда завершена!\n\n` + receipt;
+    if (overdueCost > 0) {
+      msg += `\n⚠️ Создан счёт на доплату за просрочку: <b>${fmtPrice(overdueCost)}</b>`;
+    }
+
+    await ctx.editMessageText(msg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🔄 Возвраты", "admin:returns")
+        .text("🏄 Доски", "admin:boards")
+        .row()
+        .text("⬅️ Меню", "back:menu"),
     });
-    await notify(ctx.api, rentalData.user.tgId, `❌ Ваша аренда доски <b>${board.code}</b> была отменена администратором.`);
 
-    await ctx.editMessageText(
-      `✅ Аренда #${rentalId} отменена. Доска <b>${board.code}</b> освобождена.`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("🔄 Возвраты", "admin:returns")
-          .text("🏄 Доски", "admin:boards")
-          .row()
-          .text("⬅️ Меню", "back:menu"),
-      }
-    );
+    // Send receipt to client
+    await notify(ctx.api, clientTgId, clientMsg);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
   }
@@ -699,14 +704,20 @@ adminModule.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
   }
 
   try {
-    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id);
+    // Look up tariff by minutes to get the correct price
+    const extensionTariff = await prisma.tariff.findFirst({
+      where: { spotId: rental.spotId, durationMinutes: minutes },
+    });
+    const extensionCost = extensionTariff?.price ?? 0;
+
+    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionCost);
     const totalMin = (rental.tariff?.durationMinutes ?? 0) + (rental.extraMinutes ?? 0) + minutes;
     const client = rental.clientName ?? rental.user.name;
 
     let msg = `✅ Продление подтверждено!\n\n`;
     msg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
     msg += `👤 Клиент: <b>${client}</b>\n`;
-    msg += `⏱ +${fmtDuration(minutes)}\n`;
+    msg += `⏱ +${fmtDuration(minutes)} — ${fmtPrice(extensionCost)}\n`;
     if (result.overdueMinutes > 0) {
       msg += `⚠️ Покрыто просрочки: <b>${fmtDuration(result.overdueMinutes)}</b>\n`;
       msg += `✅ Чистое время: <b>${fmtDuration(result.netMinutes)}</b>\n`;
@@ -725,7 +736,7 @@ adminModule.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
     // Notify client
     let clientMsg = `✅ Продление подтверждено!\n\n`;
     clientMsg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
-    clientMsg += `⏱ +<b>${fmtDuration(minutes)}</b>\n`;
+    clientMsg += `⏱ +<b>${fmtDuration(minutes)}</b> — ${fmtPrice(extensionCost)}\n`;
     if (result.overdueMinutes > 0) {
       clientMsg += `⚠️ Из них покрыто просрочки: ${fmtDuration(result.overdueMinutes)}\n`;
     }
@@ -842,7 +853,7 @@ adminModule.callbackQuery(/^admin:extend:(\d+)$/, async (ctx) => {
     const label = overdue > 0
       ? `+${fmtDuration(t.durationMinutes)} (нетто ${fmtDuration(net)}) — ${fmtPrice(t.price)}`
       : `+${fmtDuration(t.durationMinutes)} — ${fmtPrice(t.price)}`;
-    kb.text(label, `admin:extend_confirm:${rentalId}:${t.durationMinutes}`).row();
+    kb.text(label, `admin:extend_confirm:${rentalId}:${t.id}`).row();
   }
   kb.text("⬅️ Назад", `admin:board_detail:${rental.boardId}`).text("⬅️ Меню", "back:menu");
 
@@ -867,6 +878,7 @@ adminModule.callbackQuery(/^admin:close_overdue:(\d+)$/, async (ctx) => {
       `🏄 Доска: <b>${rental.board.code}</b>\n` +
       `👤 Клиент: <b>${client}</b>\n` +
       `⏱ Покрыто: <b>${fmtDuration(result.closedMinutes)}</b>\n` +
+      `💰 Доплата: <b>${fmtPrice(result.overdueCost)}</b>\n` +
       `Аренда снова активна (без дополнительного времени).`,
       {
         parse_mode: "HTML",
@@ -898,7 +910,10 @@ adminModule.callbackQuery(/^admin:close_overdue:(\d+)$/, async (ctx) => {
 adminModule.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
-  const minutes = parseInt(ctx.match[2]);
+  const tariffId = parseInt(ctx.match[2]);
+
+  const extensionTariff = await prisma.tariff.findUniqueOrThrow({ where: { id: tariffId } });
+  const minutes = extensionTariff.durationMinutes;
 
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
@@ -906,13 +921,13 @@ adminModule.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ctx) => {
   });
 
   try {
-    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id);
+    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionTariff.price);
     const totalMin = (rental.tariff?.durationMinutes ?? 0) + (rental.extraMinutes ?? 0) + minutes;
     const client = rental.clientName ?? rental.user.name;
 
     let msg = `✅ Аренда доски <b>${rental.board.code}</b> продлена!\n`;
     msg += `👤 Клиент: ${client}\n`;
-    msg += `⏱ Добавлено: <b>${fmtDuration(minutes)}</b>\n`;
+    msg += `⏱ Добавлено: <b>${fmtDuration(minutes)}</b> — ${fmtPrice(extensionTariff.price)}\n`;
     if (result.overdueMinutes > 0) {
       msg += `⚠️ Покрыто просрочки: <b>${fmtDuration(result.overdueMinutes)}</b>\n`;
       msg += `✅ Чистое время: <b>${fmtDuration(result.netMinutes)}</b>\n`;
@@ -929,7 +944,7 @@ adminModule.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ctx) => {
     });
 
     // Notify client about extension
-    let clientMsg = `⏱ Ваша аренда доски <b>${rental.board.code}</b> продлена на <b>${fmtDuration(minutes)}</b>!\n`;
+    let clientMsg = `⏱ Ваша аренда доски <b>${rental.board.code}</b> продлена на <b>${fmtDuration(minutes)}</b> (${fmtPrice(extensionTariff.price)})!\n`;
     if (result.overdueMinutes > 0) {
       clientMsg += `⚠️ Из них покрыто просрочки: ${fmtDuration(result.overdueMinutes)}\n`;
     }
@@ -1067,6 +1082,71 @@ adminModule.command("remove_seller", async (ctx) => {
   });
 
   await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли продавца.`);
+});
+
+// ──────── Add admin command ────────
+adminModule.command("add_admin", async (ctx) => {
+  if (ctx.dbUser?.role !== Role.ADMIN) {
+    return ctx.reply("⛔ Только для админа.");
+  }
+
+  const args = (ctx.match as string)?.split(" ").filter(Boolean);
+  if (!args || args.length < 1) {
+    return ctx.reply(
+      "Использование: /add_admin <TG_ID> [SPOT_ID]\n\nПример: /add_admin 123456789 1"
+    );
+  }
+
+  const tgId = BigInt(args[0]);
+  const spotId = args[1] ? parseInt(args[1]) : ctx.dbUser.spotId;
+
+  if (spotId) {
+    const spot = await prisma.spot.findUnique({ where: { id: spotId } });
+    if (!spot) {
+      return ctx.reply(`❌ Точка #${spotId} не найдена.`);
+    }
+  }
+
+  const user = await prisma.user.upsert({
+    where: { tgId },
+    update: { role: Role.ADMIN, spotId },
+    create: { tgId, name: `Admin ${tgId}`, role: Role.ADMIN, spotId },
+  });
+
+  await audit.log(ctx.dbUser.id, "User", user.id, "PROMOTED_TO_ADMIN", { tgId: tgId.toString() });
+  await ctx.reply(`✅ Пользователь tg:${user.tgId} назначен администратором.`);
+});
+
+// ──────── Remove admin command ────────
+adminModule.command("remove_admin", async (ctx) => {
+  if (ctx.dbUser?.role !== Role.ADMIN) {
+    return ctx.reply("⛔ Только для админа.");
+  }
+
+  const tgIdStr = (ctx.match as string)?.trim();
+  if (!tgIdStr) {
+    return ctx.reply("Использование: /remove_admin <TG_ID>");
+  }
+
+  const tgId = BigInt(tgIdStr);
+
+  // Can't remove yourself
+  if (tgId === ctx.dbUser.tgId) {
+    return ctx.reply("❌ Нельзя снять себя с роли администратора.");
+  }
+
+  const user = await prisma.user.findUnique({ where: { tgId } });
+  if (!user || user.role !== Role.ADMIN) {
+    return ctx.reply("❌ Администратор не найден.");
+  }
+
+  await prisma.user.update({
+    where: { tgId },
+    data: { role: Role.CLIENT },
+  });
+
+  await audit.log(ctx.dbUser.id, "User", user.id, "DEMOTED_FROM_ADMIN", { tgId: tgId.toString() });
+  await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли администратора.`);
 });
 
 // ──────── Approve booking ────────

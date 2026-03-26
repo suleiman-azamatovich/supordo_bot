@@ -111,31 +111,27 @@ sellerModule.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
   const rentalId = parseInt(ctx.match[1]);
 
   try {
-    const rental = await rentalService.acceptReturn(rentalId, ctx.dbUser!.id);
-    const board = await prisma.board.findUniqueOrThrow({ where: { id: rental.boardId } });
-    const rentalData = await prisma.rental.findUniqueOrThrow({
-      where: { id: rentalId },
-      include: { user: true },
-    });
-    const clientName = rental.clientName ?? rentalData.user.name;
+    const { receipt, overdueCost, clientMsg, clientTgId } =
+      await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
 
     // Determine where to go back
     const isAdmin = ctx.dbUser!.role === Role.ADMIN;
     const backAction = isAdmin ? "admin:returns" : "seller:returns";
-    const backLabel = isAdmin ? "🔄 Возвраты" : "🔄 Возвраты";
 
-    await ctx.editMessageText(
-      `✅ Доска <b>${board.code}</b> принята от <b>${clientName}</b>.`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text(backLabel, backAction)
-          .text("⬅️ Меню", "back:menu"),
-      }
-    );
+    let sellerMsg = `✅ <b>Аренда завершена!</b>\n\n` + receipt;
+    if (overdueCost > 0) {
+      sellerMsg += `\n⚠️ Создан счёт на доплату за просрочку: <b>${fmtPrice(overdueCost)}</b>`;
+    }
 
-    // Notify client
-    await notify(ctx.api, rentalData.user.tgId, `✅ Ваша доска <b>${board.code}</b> принята обратно. Спасибо!`);
+    await ctx.editMessageText(sellerMsg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🔄 Возвраты", backAction)
+        .text("⬅️ Меню", "back:menu"),
+    });
+
+    // Send receipt to client
+    await notify(ctx.api, clientTgId, clientMsg);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
   }

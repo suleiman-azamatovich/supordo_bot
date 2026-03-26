@@ -48,6 +48,7 @@ enum PaymentProofStatus {
 enum PaymentProofKind {
   BOOKING
   RENTAL
+  OVERDUE
 }
 
 model User {
@@ -89,6 +90,9 @@ model Board {
   spot     Spot      @relation(fields: [spotId], references: [id])
   bookings Booking[]
   rentals  Rental[]
+
+  @@index([status])
+  @@index([spotId])
 }
 
 model Tariff {
@@ -129,6 +133,7 @@ model Rental {
   startAt       DateTime?
   endAt         DateTime?
   extraMinutes  Int          @default(0)
+  extraCost     Int          @default(0)
   pendingExtraMinutes Int?
   status        RentalStatus @default(CREATED)
   createdAt     DateTime     @default(now())
@@ -138,6 +143,10 @@ model Rental {
   spot   Spot   @relation(fields: [spotId], references: [id])
   board  Board  @relation(fields: [boardId], references: [id])
   tariff Tariff? @relation(fields: [tariffId], references: [id])
+
+  @@index([status])
+  @@index([spotId])
+  @@index([boardId])
 }
 
 model PaymentProof {
@@ -154,6 +163,9 @@ model PaymentProof {
 
   user     User  @relation("PaymentCreator", fields: [userId], references: [id])
   reviewer User? @relation("PaymentReviewer", fields: [reviewedBy], references: [id])
+
+  @@index([status])
+  @@index([kind, refId])
 }
 
 model AuditLog {

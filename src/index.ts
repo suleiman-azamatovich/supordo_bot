@@ -1,5 +1,4 @@
 import { Bot, session } from "grammy";
-import { conversations } from "@grammyjs/conversations";
 import { BotContext, SessionData } from "./bot/context";
 import { config } from "./bot/config";
 import { authMiddleware, chatCleanupMiddleware } from "./bot/middleware";
@@ -7,6 +6,7 @@ import { clientModule } from "./modules/client";
 import { sellerModule } from "./modules/seller";
 import { adminModule } from "./modules/admin";
 import { startExpiryChecker } from "./services/expiry";
+import { prisma } from "./db/prisma";
 
 async function main() {
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
@@ -17,9 +17,6 @@ async function main() {
       initial: (): SessionData => ({}),
     })
   );
-
-  // Conversations plugin
-  bot.use(conversations());
 
   // Auth — populate dbUser on every update
   bot.use(authMiddleware);
@@ -47,9 +44,23 @@ async function main() {
   // Запуск автоматического завершения истёкших аренд
   startExpiryChecker(bot.api);
 
+  setupGracefulShutdown(bot);
+
   await bot.start({
     onStart: (info) => console.log(`✅ Bot @${info.username} started`),
   });
+}
+
+function setupGracefulShutdown(bot: Bot<BotContext>) {
+  const shutdown = async (signal: string) => {
+    console.log(`\n${signal} received — shutting down...`);
+    await bot.stop();
+    await prisma.$disconnect();
+    console.log("👋 Graceful shutdown complete.");
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main().catch((e) => {
