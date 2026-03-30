@@ -4,7 +4,7 @@ import { guardRole } from "../bot/middleware";
 import { prisma } from "../db/prisma";
 import { fmtDate, fmtPrice, fmtDuration, paginate, addPaginationRow } from "../ui/helpers";
 import * as rentalService from "../services/rental";
-import { notify } from "../services/notify";
+import { notify, sendMBankQRToChat } from "../services/notify";
 import { RentalStatus, BoardStatus, Role } from "@prisma/client";
 
 export const sellerModule = new Composer<BotContext>();
@@ -52,7 +52,13 @@ sellerModule.callbackQuery(/^seller:rented(:(\d+))?$/, async (ctx) => {
         const endAt = new Date(r.startAt.getTime() + totalMin * 60_000);
         const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
         if (isExpired) {
-          text += `   ⏰ <b>Время вышло! Ожидает возврата</b>\n`;
+          const overdue = rentalService.getOverdueMinutes(r);
+          if (overdue > 0) {
+            const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+            text += `   ⚠️ Просрочка: ${fmtDuration(overdue)} — <b>${fmtPrice(cost)}</b>\n`;
+          } else {
+            text += `   ⏰ <b>Время вышло! Грейс ${rentalService.END_GRACE_MINUTES} мин</b>\n`;
+          }
         } else if (remaining > 0) {
           text += `   ⏳ Осталось: <b>${fmtDuration(remaining)}</b>\n`;
         }
@@ -111,7 +117,7 @@ sellerModule.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
   const rentalId = parseInt(ctx.match[1]);
 
   try {
-    const { receipt, overdueCost, clientMsg, clientTgId } =
+    const { receipt, overdueCost, clientMsg, clientTgId, overdueProofId } =
       await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
 
     // Determine where to go back
@@ -131,7 +137,37 @@ sellerModule.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
     });
 
     // Send receipt to client
-    await notify(ctx.api, clientTgId, clientMsg);
+    await notify(ctx.api, clientTgId, clientMsg, { deleteAfterMs: 0 });
+
+    // If overdue, send MBank QR to client and notify admins
+    if (overdueCost > 0 && overdueProofId) {
+      await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
+
+      // Notify admins about overdue payment
+      const [admins, rental] = await Promise.all([
+        prisma.user.findMany({ where: { role: "ADMIN" } }),
+        prisma.rental.findUniqueOrThrow({
+          where: { id: rentalId },
+          include: { board: true, user: true },
+        }),
+      ]);
+      await Promise.all(admins.map((admin) =>
+        ctx.api.sendMessage(
+          Number(admin.tgId),
+          `⏰ <b>Доплата за просрочку #${overdueProofId}</b>\n\n` +
+          `👤 ${rental.user.name}\n` +
+          `🏄 Доска: ${rental.board.code}\n` +
+          `💰 Сумма: <b>${fmtPrice(overdueCost)}</b>\n\n` +
+          `Ожидается оплата от клиента.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
+              .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
+          }
+        ).catch(() => { })
+      ));
+    }
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
   }

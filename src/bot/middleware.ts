@@ -3,38 +3,63 @@ import { prisma } from "../db/prisma";
 import { BotContext } from "./context";
 import { NextFunction } from "grammy";
 
+/** In-memory user cache: tgId → user data. Avoids DB hit on every update. */
+const userCache = new Map<bigint, {
+  id: number; tgId: bigint; role: Role; name: string;
+  phone: string | null; spotId: number | null; ts: number;
+}>();
+const CACHE_TTL_MS = 5 * 60_000; // 5 min
+
 /**
  * Auth middleware: upsert user in DB, populate ctx.dbUser and session.
+ * Uses in-memory cache to skip DB on repeated messages from same user.
  */
 export async function authMiddleware(ctx: BotContext, next: NextFunction) {
   if (!ctx.from) return;
 
   const tgId = BigInt(ctx.from.id);
-  const name =
-    [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") ||
-    ctx.from.username ||
-    "User";
+  const now = Date.now();
+  let cached = userCache.get(tgId);
 
-  let user = await prisma.user.upsert({
-    where: { tgId },
-    update: {},
-    create: { tgId, name, role: Role.CLIENT },
-  });
+  if (!cached || now - cached.ts > CACHE_TTL_MS) {
+    const name =
+      [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") ||
+      ctx.from.username ||
+      "User";
+
+    const user = cached
+      ? await prisma.user.findUnique({ where: { tgId } })
+      : await prisma.user.upsert({
+        where: { tgId },
+        update: {},
+        create: { tgId, name, role: Role.CLIENT },
+      });
+
+    if (!user) return;
+
+    cached = {
+      id: user.id, tgId: user.tgId, role: user.role,
+      name: user.name, phone: user.phone, spotId: user.spotId,
+      ts: now,
+    };
+    userCache.set(tgId, cached);
+  }
 
   ctx.dbUser = {
-    id: user.id,
-    tgId: user.tgId,
-    role: user.role,
-    name: user.name,
-    phone: user.phone,
-    spotId: user.spotId,
+    id: cached.id, tgId: cached.tgId, role: cached.role,
+    name: cached.name, phone: cached.phone, spotId: cached.spotId,
   };
 
-  ctx.session.userId = user.id;
-  ctx.session.role = user.role;
-  ctx.session.spotId = user.spotId ?? undefined;
+  ctx.session.userId = cached.id;
+  ctx.session.role = cached.role;
+  ctx.session.spotId = cached.spotId ?? undefined;
 
   await next();
+}
+
+/** Invalidate cached user (call after role/spot changes). */
+export function invalidateUserCache(tgId: bigint) {
+  userCache.delete(tgId);
 }
 
 /**
@@ -48,20 +73,20 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
   if (!chatId) return next();
 
   if (ctx.message) {
-    // New message from user — clear everything
+    // New message from user — clear everything (fire-and-forget)
     const ids = ctx.session.lastBotMsgIds ?? [];
-    for (const id of ids) {
-      try { await ctx.api.deleteMessage(chatId, id); } catch { }
+    if (ids.length > 0) {
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [];
-    // Delete user's message
-    try { await ctx.api.deleteMessage(chatId, ctx.message.message_id); } catch { }
+    // Delete user's message (fire-and-forget)
+    ctx.api.deleteMessage(chatId, ctx.message.message_id).catch(() => { });
   } else if (ctx.callbackQuery?.message) {
-    // Callback — keep the source message, delete extras
+    // Callback — keep the source message, delete extras (fire-and-forget)
     const sourceId = ctx.callbackQuery.message.message_id;
     const ids = (ctx.session.lastBotMsgIds ?? []).filter((id) => id !== sourceId);
-    for (const id of ids) {
-      try { await ctx.api.deleteMessage(chatId, id); } catch { }
+    if (ids.length > 0) {
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [sourceId];
   }

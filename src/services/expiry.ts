@@ -2,15 +2,18 @@ import { RentalStatus, BoardStatus } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
 import { notify } from "./notify";
+import { END_GRACE_MINUTES, OVERDUE_RATE_PER_MIN } from "./rental";
 
 // Множество ID аренд, для которых уже отправлено предупреждение «скоро конец»
 const warnedRentals = new Set<number>();
+// Множество ID аренд, для которых уже отправлено уведомление «время истекло»
+const expiredNotifiedRentals = new Set<number>();
 
 /** Timeout for unpaid rentals (15 minutes) */
 const UNPAID_TIMEOUT_MS = 15 * 60_000;
 
 export function startExpiryChecker(api: Api) {
-  const INTERVAL_MS = 10_000; // 10 секунд (чаще для отладки)
+  const INTERVAL_MS = 30_000; // 30 секунд
 
   async function tick() {
     try {
@@ -57,9 +60,9 @@ export function startExpiryChecker(api: Api) {
           !warnedRentals.has(rental.id)
         ) {
           warnedRentals.add(rental.id);
-          const remainSec = Math.ceil(remainingMs / 1000);
+          const remainMin = Math.ceil(remainingMs / 60_000);
           console.log(
-            `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) — осталось ${remainSec}с`
+            `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) — осталось ${remainMin} мин`
           );
 
           try {
@@ -67,7 +70,7 @@ export function startExpiryChecker(api: Api) {
               api,
               chatId,
               `⚠️ Время аренды доски ${rental.board.code} почти истекло!\n` +
-              `Осталось менее ${remainSec} сек. Пожалуйста, возвращайтесь к берегу.`
+              `Осталось менее ${remainMin} мин. Пожалуйста, возвращайтесь к берегу.`
             );
           } catch (e) {
             console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
@@ -77,24 +80,18 @@ export function startExpiryChecker(api: Api) {
           await notifySellers(
             api,
             rental.spotId,
-            `⚠️ Доска ${rental.board.code} — время почти истекло (${remainSec}с)\n` +
+            `⚠️ Доска ${rental.board.code} — время почти истекло (${remainMin} мин)\n` +
             `Клиент: ${rental.clientName ?? "Telegram-клиент"}`
           );
         }
 
-        // --- Время вышло — ожидаем возврат доски ---
-        if (now >= expiresAt) {
-          await prisma.rental.update({
-            where: { id: rental.id },
-            data: { status: RentalStatus.WAIT_RETURN },
-          });
-
-          // Доска остаётся RENTED пока продавец не подтвердит возврат
-
+        // --- Время вышло — уведомляем, но даём 10мин грейс ---
+        if (now >= expiresAt && !expiredNotifiedRentals.has(rental.id)) {
+          expiredNotifiedRentals.add(rental.id);
           warnedRentals.delete(rental.id);
 
           console.log(
-            `[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) → WAIT_RETURN`
+            `[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) — время истекло, грейс ${END_GRACE_MINUTES} мин`
           );
 
           try {
@@ -102,7 +99,7 @@ export function startExpiryChecker(api: Api) {
               api,
               chatId,
               `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-              `Пожалуйста, верните доску на пляж. Спасибо! 🏄`
+              `У вас есть ${END_GRACE_MINUTES} минут чтобы вернуть доску. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
             );
           } catch (e) {
             console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
@@ -114,7 +111,42 @@ export function startExpiryChecker(api: Api) {
             `⏰ Время аренды #${rental.id} истекло!\n` +
             `Доска: ${rental.board.code}\n` +
             `Клиент: ${rental.clientName ?? "Telegram-клиент"}\n` +
-            `Подтвердите возврат доски в разделе «Возвраты».`
+            `Грейс: ${END_GRACE_MINUTES} мин до начала просрочки.`
+          );
+        }
+
+        // --- Грейс истёк — переводим в WAIT_RETURN ---
+        const graceEnd = new Date(expiresAt.getTime() + END_GRACE_MINUTES * 60_000);
+        if (now >= graceEnd) {
+          await prisma.rental.update({
+            where: { id: rental.id },
+            data: { status: RentalStatus.WAIT_RETURN },
+          });
+
+          expiredNotifiedRentals.delete(rental.id);
+
+          console.log(
+            `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) → WAIT_RETURN (просрочка ${OVERDUE_RATE_PER_MIN} сом/мин)`
+          );
+
+          try {
+            await notify(
+              api,
+              chatId,
+              `⚠️ Грейс-период истёк! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
+              `Верните доску ${rental.board.code} как можно скорее!`
+            );
+          } catch (e) {
+            console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+          }
+
+          await notifySellers(
+            api,
+            rental.spotId,
+            `⚠️ Просрочка по аренде #${rental.id}!\n` +
+            `Доска: ${rental.board.code}\n` +
+            `Клиент: ${rental.clientName ?? "Telegram-клиент"}\n` +
+            `Начисляется ${OVERDUE_RATE_PER_MIN} сом/мин. Подтвердите возврат в разделе «Возвраты».`
           );
         }
       }
@@ -125,7 +157,7 @@ export function startExpiryChecker(api: Api) {
 
   tick();
   setInterval(tick, INTERVAL_MS);
-  console.log("⏰ Expiry checker started (every 10s)");
+  console.log("⏰ Expiry checker started (every 30s)");
 }
 
 async function notifySellers(api: Api, spotId: number, text: string) {
@@ -133,9 +165,7 @@ async function notifySellers(api: Api, spotId: number, text: string) {
     const sellers = await prisma.user.findMany({
       where: { role: { in: ["SELLER", "ADMIN"] }, spotId },
     });
-    for (const seller of sellers) {
-      await notify(api, seller.tgId, text);
-    }
+    await Promise.all(sellers.map((s) => notify(api, s.tgId, text).catch(() => { })));
   } catch (e) {
     console.error("[expiry] Ошибка уведомления продавцов:", e);
   }

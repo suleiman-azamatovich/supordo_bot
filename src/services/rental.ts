@@ -6,6 +6,14 @@ import {
 } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
+import { fmtPrice } from "../ui/helpers";
+
+/** Задержка старта таймера после подтверждения оплаты (8 минут) */
+export const START_GRACE_MS = 8 * 60_000;
+/** Грейс-период после окончания аренды до начала просрочки (10 минут) */
+export const END_GRACE_MINUTES = 10;
+/** Стоимость просрочки: 10 сом за минуту */
+export const OVERDUE_RATE_PER_MIN = 10;
 
 export async function createRental(params: {
   userId: number;
@@ -172,9 +180,10 @@ export async function submitPayment(params: {
 }
 
 export async function approveRental(rentalId: number, adminUserId: number) {
+  const startAt = new Date(Date.now() + START_GRACE_MS);
   const rental = await prisma.rental.update({
     where: { id: rentalId },
-    data: { status: RentalStatus.RENTED, startAt: new Date() },
+    data: { status: RentalStatus.RENTED, startAt },
   });
   await prisma.board.update({
     where: { id: rental.boardId },
@@ -221,8 +230,9 @@ export async function completeReturn(rentalId: number, actorUserId: number) {
   });
 
   // If overdue, create payment proof for the overdue amount
+  let overdueProofId: number | null = null;
   if (overdueCost > 0) {
-    await prisma.paymentProof.create({
+    const proof = await prisma.paymentProof.create({
       data: {
         kind: PaymentProofKind.OVERDUE,
         refId: rentalId,
@@ -231,17 +241,18 @@ export async function completeReturn(rentalId: number, actorUserId: number) {
         text: `Просрочка по аренде #${rentalId}`,
       },
     });
+    overdueProofId = proof.id;
   }
 
   // Build client message
   let clientMsg = `✅ <b>Аренда завершена!</b>\n\n` + receipt;
   if (overdueCost > 0) {
-    clientMsg += `\n⚠️ У вас задолженность за просрочку: <b>${overdueCost}</b>.\nОжидайте подтверждения оплаты.`;
+    clientMsg += `\n⚠️ У вас задолженность за просрочку: <b>${fmtPrice(overdueCost)}</b>.\nОплатите через MBank по QR-коду ниже.`;
   } else {
     clientMsg += `\nСпасибо за аренду! 🌊`;
   }
 
-  return { rental, receipt, overdueCost, clientMsg, clientTgId: rental.user.tgId };
+  return { rental, receipt, overdueCost, clientMsg, clientTgId: rental.user.tgId, overdueProofId };
 }
 
 export async function extendRental(rentalId: number, minutes: number, userId: number, extensionCost?: number) {
@@ -259,15 +270,15 @@ export async function extendRental(rentalId: number, minutes: number, userId: nu
   if (rental.startAt && rental.tariff) {
     const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
     const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+    const graceEnd = new Date(endAt.getTime() + END_GRACE_MINUTES * 60_000);
     const now = new Date();
-    if (now > endAt) {
-      overdueMinutes = Math.ceil((now.getTime() - endAt.getTime()) / 60_000);
+    if (now > graceEnd) {
+      overdueMinutes = Math.ceil((now.getTime() - graceEnd.getTime()) / 60_000);
     }
   }
 
-  // Calculate cost: use provided cost or fall back to per-minute rate
-  const perMinuteRate = rental.tariff ? rental.tariff.price / rental.tariff.durationMinutes : 0;
-  const cost = extensionCost ?? Math.ceil(minutes * perMinuteRate);
+  // Calculate cost: use provided cost or fall back to tariff price
+  const cost = extensionCost ?? 0;
 
   const newExtra = (rental.extraMinutes ?? 0) + minutes;
 
@@ -310,8 +321,10 @@ export function getOverdueMinutes(rental: {
   const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
   const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
   const now = new Date();
-  if (now > endAt) {
-    return Math.ceil((now.getTime() - endAt.getTime()) / 60_000);
+  // Грейс-период: просрочка начинается через END_GRACE_MINUTES после окончания
+  const graceEnd = new Date(endAt.getTime() + END_GRACE_MINUTES * 60_000);
+  if (now > graceEnd) {
+    return Math.ceil((now.getTime() - graceEnd.getTime()) / 60_000);
   }
   return 0;
 }
@@ -332,9 +345,8 @@ export async function closeOverdue(rentalId: number, userId: number) {
     throw new Error('Нет просрочки для закрытия');
   }
 
-  // Calculate overdue cost
-  const perMinuteRate = rental.tariff ? rental.tariff.price / rental.tariff.durationMinutes : 0;
-  const overdueCost = Math.ceil(overdue * perMinuteRate);
+  // Calculate overdue cost — фиксированные 10 сом/мин
+  const overdueCost = overdue * OVERDUE_RATE_PER_MIN;
 
   const newExtra = (rental.extraMinutes ?? 0) + overdue;
 
@@ -359,6 +371,55 @@ export async function closeOverdue(rentalId: number, userId: number) {
   });
 
   return { ...updated, closedMinutes: overdue, overdueCost };
+}
+
+/** Client requests overdue closure — creates OVERDUE proof for admin approval */
+export async function requestCloseOverdue(rentalId: number, userId: number) {
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { tariff: true, board: true },
+  });
+
+  if (rental.status !== 'WAIT_RETURN') {
+    throw new Error('Нет просрочки для закрытия');
+  }
+
+  const overdueMinutes = getOverdueMinutes(rental);
+  if (overdueMinutes <= 0) {
+    throw new Error('Нет просрочки для закрытия');
+  }
+
+  const { overdueCost } = calculateOverdueCost(rental);
+
+  // Idempotency: don't create duplicate SUBMITTED proofs
+  const existing = await prisma.paymentProof.findFirst({
+    where: {
+      kind: PaymentProofKind.OVERDUE,
+      refId: rentalId,
+      status: PaymentProofStatus.SUBMITTED,
+    },
+  });
+  if (existing) {
+    return { proof: existing, overdueCost, overdueMinutes, duplicate: true };
+  }
+
+  const proof = await prisma.paymentProof.create({
+    data: {
+      kind: PaymentProofKind.OVERDUE,
+      refId: rentalId,
+      amount: overdueCost,
+      userId,
+      text: `Закрытие просрочки по аренде #${rentalId} (${overdueMinutes} мин)`,
+    },
+  });
+
+  await audit.log(userId, 'PaymentProof', proof.id, 'SUBMITTED', {
+    rentalId,
+    overdueCost,
+    overdueMinutes,
+  });
+
+  return { proof, overdueCost, overdueMinutes, duplicate: false };
 }
 
 /** Client requests extension — needs admin approval */
@@ -406,8 +467,7 @@ export function calculateOverdueCost(rental: {
   status: string;
 }): { overdueMinutes: number; overdueCost: number } {
   const overdueMinutes = getOverdueMinutes(rental);
-  const perMinuteRate = rental.tariff ? rental.tariff.price / rental.tariff.durationMinutes : 0;
-  const overdueCost = Math.ceil(overdueMinutes * perMinuteRate);
+  const overdueCost = overdueMinutes * OVERDUE_RATE_PER_MIN;
   return { overdueMinutes, overdueCost };
 }
 
@@ -472,7 +532,6 @@ export async function getRentalReceipt(rentalId: number): Promise<string> {
   const extra = rental.extraMinutes ?? 0;
   const extraCost = rental.extraCost ?? 0;
   const totalPaidMinutes = baseDuration + extra;
-  const perMinuteRate = baseDuration > 0 ? basePrice / baseDuration : 0;
 
   text += `\n<b>⏱ Время:</b>\n`;
   if (rental.tariff) {
@@ -483,29 +542,32 @@ export async function getRentalReceipt(rentalId: number): Promise<string> {
   }
   text += `   Оплаченное время: <b>${fmtDuration(totalPaidMinutes)}</b>\n`;
 
-  // Actual usage & overdue
+  // Actual usage & overdue (with 10-min grace)
   let overdueAtReturn = 0;
   if (rental.startAt && rental.endAt) {
     const actualMin = Math.ceil((rental.endAt.getTime() - rental.startAt.getTime()) / 60_000);
     text += `   Фактическое время: <b>${fmtDuration(actualMin)}</b>\n`;
-    overdueAtReturn = Math.max(0, actualMin - totalPaidMinutes);
+    // Просрочка = фактическое время - оплаченное - грейс
+    const rawOverdue = actualMin - totalPaidMinutes - END_GRACE_MINUTES;
+    overdueAtReturn = Math.max(0, rawOverdue);
     if (overdueAtReturn > 0) {
-      text += `   ⚠️ Просрочка: <b>${fmtDuration(overdueAtReturn)}</b>\n`;
+      text += `   ⚠️ Просрочка: <b>${fmtDuration(overdueAtReturn)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
     }
   } else if (rental.startAt) {
     // Rental still active — show current overdue
     const now = new Date();
     const actualMin = Math.ceil((now.getTime() - rental.startAt.getTime()) / 60_000);
     text += `   Текущее время: <b>${fmtDuration(actualMin)}</b>\n`;
-    const currentOverdue = Math.max(0, actualMin - totalPaidMinutes);
+    const rawOverdue = actualMin - totalPaidMinutes - END_GRACE_MINUTES;
+    const currentOverdue = Math.max(0, rawOverdue);
     if (currentOverdue > 0) {
       overdueAtReturn = currentOverdue;
-      text += `   ⚠️ Просрочка: <b>${fmtDuration(currentOverdue)}</b>\n`;
+      text += `   ⚠️ Просрочка: <b>${fmtDuration(currentOverdue)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
     }
   }
 
-  // Cost breakdown
-  const overdueCost = Math.ceil(overdueAtReturn * perMinuteRate);
+  // Cost breakdown — overdue at flat rate
+  const overdueCost = overdueAtReturn * OVERDUE_RATE_PER_MIN;
   const totalCost = basePrice + extraCost + overdueCost;
   const paidAmount = basePrice + extraCost;
 

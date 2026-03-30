@@ -1,4 +1,5 @@
 import { Bot, session } from "grammy";
+import { run, sequentialize } from "@grammyjs/runner";
 import { BotContext, SessionData } from "./bot/context";
 import { config } from "./bot/config";
 import { authMiddleware, chatCleanupMiddleware } from "./bot/middleware";
@@ -10,6 +11,9 @@ import { prisma } from "./db/prisma";
 
 async function main() {
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
+
+  // Sequentialize per chat to keep session consistency
+  bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
 
   // Session
   bot.use(
@@ -44,17 +48,13 @@ async function main() {
   // Запуск автоматического завершения истёкших аренд
   startExpiryChecker(bot.api);
 
-  setupGracefulShutdown(bot);
+  // Run with concurrent update processing
+  const runner = run(bot);
+  console.log("✅ Bot started (runner mode)");
 
-  await bot.start({
-    onStart: (info) => console.log(`✅ Bot @${info.username} started`),
-  });
-}
-
-function setupGracefulShutdown(bot: Bot<BotContext>) {
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received — shutting down...`);
-    await bot.stop();
+    runner.isRunning() && runner.stop();
     await prisma.$disconnect();
     console.log("👋 Graceful shutdown complete.");
     process.exit(0);

@@ -13,7 +13,7 @@ import * as paymentService from "../services/payment";
 import * as rentalService from "../services/rental";
 import * as reports from "../services/reports";
 import * as audit from "../services/audit";
-import { notify, getNotifications } from "../services/notify";
+import { notify, getNotifications, sendMBankQRToChat } from "../services/notify";
 import { Role, BoardStatus, BookingStatus, RentalStatus, PaymentProofStatus } from "@prisma/client";
 import { config } from "../bot/config";
 
@@ -167,8 +167,13 @@ adminModule.callbackQuery(/^admin:returns(:(\d+))?$/, async (ctx) => {
       const totalMin = r.tariff.durationMinutes + (r.extraMinutes ?? 0);
       const endAt = new Date(r.startAt.getTime() + totalMin * 60_000);
       if (isExpired) {
-        const overdue = Math.ceil((now.getTime() - endAt.getTime()) / 60_000);
-        if (overdue > 0) text += `     просрочено <b>${fmtDuration(overdue)}</b>\n`;
+        const overdue = rentalService.getOverdueMinutes(r);
+        if (overdue > 0) {
+          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+          text += `     просрочено <b>${fmtDuration(overdue)}</b> — ${fmtPrice(cost)}\n`;
+        } else {
+          text += `     грейс-период (${rentalService.END_GRACE_MINUTES} мин)\n`;
+        }
       } else {
         const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
         text += `     осталось ${fmtDuration(remaining)}\n`;
@@ -235,7 +240,7 @@ adminModule.callbackQuery(/^pay:approve:(\d+)$/, async (ctx) => {
   try {
     const proof = await paymentService.approvePayment(proofId, ctx.dbUser!.id);
 
-    // Notify client — timer started
+    // Notify client
     const clientUser = await prisma.user.findUniqueOrThrow({ where: { id: proof.userId } });
 
     if (proof.kind === "RENTAL") {
@@ -249,16 +254,46 @@ adminModule.callbackQuery(/^pay:approve:(\d+)$/, async (ctx) => {
           clientUser.tgId,
           `✅ Оплата подтверждена!\n\n` +
           `🏄 Доска: <b>${rental.board.code}</b>\n` +
-          `⏱ Время пошло: <b>${rental.tariff ? fmtDuration(rental.tariff.durationMinutes) : ""}</b>\n\n` +
+          `⏱ Тариф: <b>${rental.tariff ? fmtDuration(rental.tariff.durationMinutes) : ""}</b>\n` +
+          `🕐 Отсчёт начнётся через <b>8 минут</b> — у вас есть время спуститься на воду.\n\n` +
           `Приятного катания! 🌊\n` +
           `Не забывайте о правилах безопасности!`
+        );
+      }
+    } else if (proof.kind === "OVERDUE") {
+      const rental = await prisma.rental.findUnique({
+        where: { id: proof.refId },
+        include: { board: true, tariff: true },
+      });
+      if (rental && rental.status === "RENTED") {
+        // Overdue was closed (rental back to RENTED)
+        await notify(
+          ctx.api,
+          clientUser.tgId,
+          `✅ Оплата за просрочку подтверждена!\n\n` +
+          `🏄 Доска: <b>${rental.board.code}</b>\n` +
+          `💰 Оплачено: <b>${fmtPrice(proof.amount)}</b>\n\n` +
+          `Просрочка закрыта, аренда продолжается. Приятного катания! 🌊`,
+          { deleteAfterMs: 0 }
+        );
+      } else {
+        // Rental already returned, just confirm payment
+        await notify(
+          ctx.api,
+          clientUser.tgId,
+          `✅ Доплата за просрочку <b>${fmtPrice(proof.amount)}</b> подтверждена. Спасибо! 🌊`,
+          { deleteAfterMs: 0 }
         );
       }
     } else {
       await notify(ctx.api, clientUser.tgId, `✅ Ваша оплата подтверждена! Бронирование активно.`);
     }
 
-    await ctx.editMessageText(`✅ Оплата #${proofId} подтверждена. Аренда запущена.`, {
+    const statusText = proof.kind === "OVERDUE"
+      ? `✅ Оплата за просрочку #${proofId} подтверждена.`
+      : `✅ Оплата #${proofId} подтверждена. Аренда запущена.`;
+
+    await ctx.editMessageText(statusText, {
       reply_markup: new InlineKeyboard()
         .text("💳 К оплатам", "admin:payments")
         .text("⬅️ Меню", "back:menu"),
@@ -279,7 +314,18 @@ adminModule.callbackQuery(/^pay:reject:(\d+)$/, async (ctx) => {
     const proof = await paymentService.rejectPayment(proofId, ctx.dbUser!.id);
 
     const clientUser = await prisma.user.findUniqueOrThrow({ where: { id: proof.userId } });
-    await notify(ctx.api, clientUser.tgId, `❌ Ваша оплата #${proof.id} отклонена.\nПопробуйте оплатить повторно или свяжитесь с администрацией.`);
+
+    if (proof.kind === "OVERDUE") {
+      await notify(
+        ctx.api,
+        clientUser.tgId,
+        `❌ Оплата за просрочку #${proof.id} отклонена.\n` +
+        `Попробуйте оплатить повторно через «Мои аренды» или свяжитесь с администрацией.`,
+        { deleteAfterMs: 0 }
+      );
+    } else {
+      await notify(ctx.api, clientUser.tgId, `❌ Ваша оплата #${proof.id} отклонена.\nПопробуйте оплатить повторно или свяжитесь с администрацией.`);
+    }
 
     await ctx.editMessageText(`❌ Оплата #${proofId} отклонена.`, {
       reply_markup: new InlineKeyboard()
@@ -609,11 +655,13 @@ adminModule.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
       if (rental.status === "WAIT_RETURN") {
         const overdue = rentalService.getOverdueMinutes(rental);
         if (overdue > 0) {
-          text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)}</b>\n`;
+          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+          text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)} — ${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
         }
         kb.text("✅ Принять возврат", `seller:return:${rental.id}`).row();
         if (overdue > 0) {
-          kb.text(`🔄 Закрыть просрочку (${fmtDuration(overdue)})`, `admin:close_overdue:${rental.id}`).row();
+          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+          kb.text(`🔄 Закрыть просрочку (${fmtDuration(overdue)} — ${fmtPrice(cost)})`, `admin:close_overdue:${rental.id}`).row();
         }
       }
       kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
@@ -660,7 +708,7 @@ adminModule.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
   const rentalId = parseInt(ctx.match[1]);
 
   try {
-    const { receipt, overdueCost, clientMsg, clientTgId } =
+    const { receipt, overdueCost, clientMsg, clientTgId, overdueProofId } =
       await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
 
     let msg = `✅ Аренда завершена!\n\n` + receipt;
@@ -678,7 +726,37 @@ adminModule.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
     });
 
     // Send receipt to client
-    await notify(ctx.api, clientTgId, clientMsg);
+    await notify(ctx.api, clientTgId, clientMsg, { deleteAfterMs: 0 });
+
+    // If overdue, send MBank QR to client and notify admins
+    if (overdueCost > 0 && overdueProofId) {
+      await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
+
+      // Notify other admins about overdue payment
+      const [admins, rental] = await Promise.all([
+        prisma.user.findMany({ where: { role: "ADMIN" } }),
+        prisma.rental.findUniqueOrThrow({
+          where: { id: rentalId },
+          include: { board: true, user: true },
+        }),
+      ]);
+      await Promise.all(admins.filter((a) => a.id !== ctx.dbUser!.id).map((admin) =>
+        ctx.api.sendMessage(
+          Number(admin.tgId),
+          `⏰ <b>Доплата за просрочку #${overdueProofId}</b>\n\n` +
+          `👤 ${rental.user.name}\n` +
+          `🏄 Доска: ${rental.board.code}\n` +
+          `💰 Сумма: <b>${fmtPrice(overdueCost)}</b>\n\n` +
+          `Ожидается оплата от клиента.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
+              .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
+          }
+        ).catch(() => { })
+      ));
+    }
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
   }

@@ -1,5 +1,9 @@
-import { Api } from "grammy";
+import { Api, InputFile } from "grammy";
+import path from "path";
 import { prisma } from "../db/prisma";
+import { fmtPrice } from "../ui/helpers";
+
+const MBANK_QR_PATH = path.join(__dirname, "..", "..", "qr-bank", "mbank_qr.jpeg");
 
 const AUTO_DELETE_MS = 60_000; // удалять сообщение из чата через 60 сек
 
@@ -18,13 +22,14 @@ export async function notify(
   const chatId = Number(tgId);
   const deleteMs = opts?.deleteAfterMs ?? AUTO_DELETE_MS;
 
-  // Save to DB
-  const user = await prisma.user.findUnique({ where: { tgId: BigInt(chatId) } });
-  if (user) {
-    await prisma.notification.create({
-      data: { userId: user.id, text: stripHtml(text) },
-    });
-  }
+  // Save to DB (fire-and-forget, don't block send)
+  prisma.user.findUnique({ where: { tgId: BigInt(chatId) } }).then((user) => {
+    if (user) {
+      prisma.notification.create({
+        data: { userId: user.id, text: stripHtml(text) },
+      }).catch(() => { });
+    }
+  }).catch(() => { });
 
   // Send message
   try {
@@ -42,6 +47,25 @@ export async function notify(
     }
   } catch (e) {
     console.error(`[notify] Failed to send to ${chatId}:`, e);
+  }
+}
+
+/** Send MBank QR code to a specific chat */
+export async function sendMBankQRToChat(
+  api: Api,
+  chatId: number | bigint,
+  amount: number
+) {
+  try {
+    await api.sendPhoto(Number(chatId), new InputFile(MBANK_QR_PATH), {
+      caption:
+        `💳 <b>Оплата через MBank</b>\n\n` +
+        `Отсканируйте QR-код в приложении MBank и переведите <b>${fmtPrice(amount)}</b>.\n` +
+        `После перевода администратор подтвердит оплату.`,
+      parse_mode: "HTML",
+    });
+  } catch (e) {
+    console.error("Failed to send MBank QR:", e);
   }
 }
 

@@ -379,19 +379,17 @@ clientModule.on("message:photo", async (ctx) => {
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
       const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-      for (const admin of admins) {
-        try {
-          await ctx.api.sendPhoto(Number(admin.tgId), fileId, {
-            caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,
-            parse_mode: "HTML",
-            reply_markup: new InlineKeyboard()
-              .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
-              .text("❌ Отклонить", `pay:reject:${proofId}`)
-              .row()
-              .text("💬 Ответить", `admin:chat_client:${proofId}`),
-          });
-        } catch { }
-      }
+      await Promise.all(admins.map((admin) =>
+        ctx.api.sendPhoto(Number(admin.tgId), fileId, {
+          caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
+            .text("❌ Отклонить", `pay:reject:${proofId}`)
+            .row()
+            .text("💬 Ответить", `admin:chat_client:${proofId}`),
+        }).catch(() => { })
+      ));
       await ctx.reply("✅ Фото отправлено администратору.");
     } catch {
       await ctx.reply("⚠️ Не удалось отправить фото.");
@@ -506,7 +504,13 @@ clientModule.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
       }
 
       if (r.status === "WAIT_RETURN") {
-        text += `   ⏰ Время истекло — верните доску на пляж\n`;
+        const overdue = rentalService.getOverdueMinutes(r);
+        if (overdue > 0) {
+          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+          text += `   ⚠️ Просрочка: ${fmtDuration(overdue)} — <b>${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+        } else {
+          text += `   ⏰ Время истекло — грейс ${rentalService.END_GRACE_MINUTES} мин, верните доску\n`;
+        }
       }
 
       if (r.pendingExtraMinutes) {
@@ -528,7 +532,8 @@ clientModule.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
       // Show overdue info and close overdue button
       const overdue = rentalService.getOverdueMinutes(r);
       if (overdue > 0) {
-        kb.text(`🔄 Закрыть просрочку ${r.board.code} (${fmtDuration(overdue)})`, `client:close_overdue:${r.id}`).row();
+        const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+        kb.text(`🔄 Закрыть просрочку ${r.board.code} (${fmtDuration(overdue)} — ${fmtPrice(cost)})`, `client:close_overdue:${r.id}`).row();
       }
     }
     if ((r.status === "RENTED" || r.status === "WAIT_RETURN") && !r.pendingExtraMinutes) {
@@ -556,14 +561,16 @@ clientModule.callbackQuery(/^client:close_overdue:(\d+)$/, async (ctx) => {
   }
 
   try {
-    const result = await rentalService.closeOverdue(rentalId, ctx.dbUser!.id);
+    const { proof, overdueCost, overdueMinutes } =
+      await rentalService.requestCloseOverdue(rentalId, ctx.dbUser!.id);
 
     await ctx.editMessageText(
-      `✅ Просрочка закрыта!\n\n` +
+      `⏰ <b>Запрос на закрытие просрочки</b>\n\n` +
       `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `⏱ Покрыто: <b>${fmtDuration(result.closedMinutes)}</b>\n` +
-      `💰 Доплата: <b>${fmtPrice(result.overdueCost)}</b>\n` +
-      `Аренда снова активна.`,
+      `⏱ Просрочка: <b>${fmtDuration(overdueMinutes)}</b>\n` +
+      `💰 К оплате: <b>${fmtPrice(overdueCost)}</b>\n\n` +
+      `Оплатите через MBank по QR-коду ниже.\n` +
+      `После подтверждения оплаты администратором просрочка будет закрыта.`,
       {
         parse_mode: "HTML",
         reply_markup: new InlineKeyboard()
@@ -572,17 +579,11 @@ clientModule.callbackQuery(/^client:close_overdue:(\d+)$/, async (ctx) => {
       }
     );
 
-    // Notify admins
-    const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-    for (const admin of admins) {
-      try {
-        await ctx.api.sendMessage(
-          Number(admin.tgId),
-          `🔄 Клиент <b>${ctx.dbUser!.name}</b> закрыл просрочку по доске <b>${rental.board.code}</b> (${fmtDuration(result.closedMinutes)}).`,
-          { parse_mode: "HTML" }
-        );
-      } catch { }
-    }
+    // Send MBank QR with overdue amount
+    await sendMBankQR(ctx, overdueCost);
+
+    // Notify admins about overdue payment
+    await notifyAdminsNewPayment(ctx, proof.id);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`, {
       reply_markup: new InlineKeyboard().text("📋 Мои аренды", "client:my_list"),
@@ -665,7 +666,7 @@ clientModule.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ctx) =>
 
     // Notify admins about extension request
     const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-    for (const admin of admins) {
+    await Promise.all(admins.map(async (admin) => {
       await prisma.notification.create({
         data: {
           userId: admin.id,
@@ -693,7 +694,7 @@ clientModule.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ctx) =>
       } catch (e) {
         console.error(`Failed to notify admin ${admin.tgId}:`, e);
       }
-    }
+    }));
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`, {
       reply_markup: new InlineKeyboard().text("⬅️ Назад", "client:my_list"),
@@ -811,22 +812,20 @@ clientModule.on("message:text", async (ctx, next) => {
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
       const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-      for (const admin of admins) {
-        try {
-          await ctx.api.sendMessage(
-            Number(admin.tgId),
-            `💬 <b>${userName}</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
-            {
-              parse_mode: "HTML",
-              reply_markup: new InlineKeyboard()
-                .text("✅ Подтвердить", `ext:approve:${rentalId}`)
-                .text("❌ Отклонить", `ext:reject:${rentalId}`)
-                .row()
-                .text("💬 Ответить", `ext:chat:${rentalId}`),
-            }
-          );
-        } catch { }
-      }
+      await Promise.all(admins.map((admin) =>
+        ctx.api.sendMessage(
+          Number(admin.tgId),
+          `💬 <b>${userName}</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .text("✅ Подтвердить", `ext:approve:${rentalId}`)
+              .text("❌ Отклонить", `ext:reject:${rentalId}`)
+              .row()
+              .text("💬 Ответить", `ext:chat:${rentalId}`),
+          }
+        ).catch(() => { })
+      ));
       await ctx.reply("✅ Сообщение отправлено администратору.", {
         reply_markup: new InlineKeyboard()
           .text("🛑 Завершить чат", "client:end_chat"),
@@ -912,6 +911,14 @@ async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     refText = rental
       ? `Аренда #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
       : `Аренда #${proof.refId}`;
+  } else if (proof.kind === "OVERDUE") {
+    const rental = await prisma.rental.findUnique({
+      where: { id: proof.refId },
+      include: { board: true, spot: true },
+    });
+    refText = rental
+      ? `⏰ Просрочка по аренде #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
+      : `Просрочка по аренде #${proof.refId}`;
   } else {
     const booking = await prisma.booking.findUnique({
       where: { id: proof.refId },
@@ -937,7 +944,7 @@ async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
 
   // Find all admins
   const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-  for (const admin of admins) {
+  await Promise.all(admins.map(async (admin) => {
     // Save notification to DB for admin's bell
     await prisma.notification.create({
       data: {
@@ -947,21 +954,20 @@ async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     });
 
     try {
-      const msg: { chat: { id: number }; message_id?: number } & Record<string, any> =
-        proof.fileId
-          ? await ctx.api.sendPhoto(Number(admin.tgId), proof.fileId, {
-            caption: text,
-            parse_mode: "HTML",
-            reply_markup: kb,
-          })
-          : await ctx.api.sendMessage(Number(admin.tgId), text, {
-            parse_mode: "HTML",
-            reply_markup: kb,
-          });
+      proof.fileId
+        ? await ctx.api.sendPhoto(Number(admin.tgId), proof.fileId, {
+          caption: text,
+          parse_mode: "HTML",
+          reply_markup: kb,
+        })
+        : await ctx.api.sendMessage(Number(admin.tgId), text, {
+          parse_mode: "HTML",
+          reply_markup: kb,
+        });
     } catch (e) {
       console.error(`Failed to notify admin ${admin.tgId}:`, e);
     }
-  }
+  }));
 }
 
 // ──────── Send MBank QR code to client ────────

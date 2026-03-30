@@ -36,8 +36,8 @@ async function main() {
     console.log(`Admin user created/updated: id=${admin.id}, tgId=${admin.tgId}`);
   }
 
-  // Create 20 boards with permanent sequential codes SUP-01..SUP-20
-  const boards = Array.from({ length: 20 }, (_, i) => ({
+  // Create 10 boards with permanent sequential codes SUP-01..SUP-10
+  const boards = Array.from({ length: 10 }, (_, i) => ({
     code: `SUP-${String(i + 1).padStart(2, "0")}`,
     title: `SUP-${String(i + 1).padStart(2, "0")}`,
     spotId: spot.id,
@@ -54,9 +54,9 @@ async function main() {
 
   // Create tariffs (prices in KGS — сом)
   const tariffs = [
-    { spotId: spot.id, name: "1 минута", durationMinutes: 1, price: 300 },
-    { spotId: spot.id, name: "2 минуты", durationMinutes: 2, price: 500 },
-    { spotId: spot.id, name: "3 минуты", durationMinutes: 3, price: 900 },
+    { spotId: spot.id, name: "1 час", durationMinutes: 60, price: 600 },
+    { spotId: spot.id, name: "1,5 часа", durationMinutes: 90, price: 900 },
+    { spotId: spot.id, name: "2 часа", durationMinutes: 120, price: 1200 },
   ];
 
   // Delete existing tariffs and recreate

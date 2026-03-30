@@ -30,8 +30,13 @@ export async function approvePayment(proofId: number, adminUserId: number) {
     await rentalService.approveRental(proof.refId, adminUserId);
   } else if (proof.kind === PaymentProofKind.BOOKING) {
     await bookingService.approveBooking(proof.refId, adminUserId);
+  } else if (proof.kind === PaymentProofKind.OVERDUE) {
+    // If rental is still active (WAIT_RETURN), close the overdue
+    const rental = await prisma.rental.findUnique({ where: { id: proof.refId } });
+    if (rental && rental.status === "WAIT_RETURN") {
+      await rentalService.closeOverdue(proof.refId, adminUserId);
+    }
   }
-  // OVERDUE: just mark as approved, rental already RETURNED
 
   return proof;
 }
