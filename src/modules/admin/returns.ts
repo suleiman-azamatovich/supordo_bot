@@ -245,13 +245,13 @@ returnsHandlers.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
       await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
 
       const [admins, rental] = await Promise.all([
-        prisma.user.findMany({ where: { role: "ADMIN" } }),
+        prisma.user.findMany({ where: { role: Role.ADMIN } }),
         prisma.rental.findUniqueOrThrow({
           where: { id: rentalId },
           include: { board: true, user: true },
         }),
       ]);
-      await Promise.all(admins.map((admin) =>
+      await Promise.all(admins.filter((a) => a.id !== ctx.dbUser!.id).map((admin) =>
         ctx.api.sendMessage(
           Number(admin.tgId),
           `⏰ <b>Доплата за просрочку #${overdueProofId}</b>\n\n` +
@@ -265,7 +265,7 @@ returnsHandlers.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
               .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
               .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
           }
-        ).catch(() => { })
+        ).catch((e) => console.error('[returns] Ошибка уведомления админа:', e))
       ));
     }
   } catch (e: any) {
@@ -326,7 +326,7 @@ returnsHandlers.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
       await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
 
       const [admins, rental] = await Promise.all([
-        prisma.user.findMany({ where: { role: "ADMIN" } }),
+        prisma.user.findMany({ where: { role: Role.ADMIN } }),
         prisma.rental.findUniqueOrThrow({
           where: { id: rentalId },
           include: { board: true, user: true },
@@ -346,7 +346,7 @@ returnsHandlers.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
               .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
               .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
           }
-        ).catch(() => { })
+        ).catch((e) => console.error('[returns] Ошибка уведомления админа:', e))
       ));
     }
   } catch (e: any) {

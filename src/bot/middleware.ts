@@ -94,17 +94,17 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
     // New message from user — clear everything (fire-and-forget)
     const ids = ctx.session.lastBotMsgIds ?? [];
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e))));
     }
     ctx.session.lastBotMsgIds = [];
     // Delete user's message (fire-and-forget)
-    ctx.api.deleteMessage(chatId, ctx.message.message_id).catch(() => { });
+    ctx.api.deleteMessage(chatId, ctx.message.message_id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e));
   } else if (ctx.callbackQuery?.message) {
     // Callback — keep the source message, delete extras (fire-and-forget)
     const sourceId = ctx.callbackQuery.message.message_id;
     const ids = (ctx.session.lastBotMsgIds ?? []).filter((id) => id !== sourceId);
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e))));
     }
     ctx.session.lastBotMsgIds = [sourceId];
   }

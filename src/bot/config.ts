@@ -24,7 +24,14 @@ export const config = {
   ADMIN_TG_IDS: (process.env.ADMIN_TG_IDS ?? process.env.ADMIN_TG_ID ?? "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean),
+    .filter(Boolean)
+    .filter((s) => {
+      if (!/^\d+$/.test(s)) {
+        console.error(`[config] Некорректный ADMIN_TG_ID: "${s}" — ожидается числовой Telegram ID`);
+        return false;
+      }
+      return true;
+    }),
   MBANK_QR_FILE_ID: process.env.MBANK_QR_FILE_ID ?? "",
   LOG_LEVEL: process.env.LOG_LEVEL ?? "info",
   TIMEZONE: process.env.TIMEZONE ?? "Asia/Bishkek",

@@ -24,9 +24,10 @@ export const startHandlers = new Composer<BotContext>();
 startHandlers.command("start", async (ctx) => {
   const payload = (ctx.match as string)?.trim();
 
-  // Deep link: /start SUP-05 → начинаем аренду доски
-  if (payload && /^SUP-\d{2}$/i.test(payload)) {
-    return handleRentalByQR(ctx, payload.toUpperCase());
+  // Deep link: /start board_SUP-05 или /start SUP-05 → начинаем аренду доски
+  const boardCode = payload?.replace(/^board_/i, "");
+  if (boardCode && /^SUP-\d{2}$/i.test(boardCode)) {
+    return handleRentalByQR(ctx, boardCode.toUpperCase());
   }
 
   const role = ctx.dbUser?.role ?? "CLIENT";

@@ -9,7 +9,7 @@
  *
  * @module
  */
-import { RentalStatus, BoardStatus } from "@prisma/client";
+import { RentalStatus, BoardStatus, Role } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
 import { notify, clearOldNotifications } from "./notify";
@@ -191,9 +191,9 @@ export function startExpiryChecker(api: Api) {
 async function notifySellers(api: Api, spotId: number, text: string) {
   try {
     const sellers = await prisma.user.findMany({
-      where: { role: "ADMIN", spotId },
+      where: { role: Role.ADMIN, spotId },
     });
-    await Promise.all(sellers.map((s) => notify(api, s.tgId, text).catch(() => { })));
+    await Promise.all(sellers.map((s) => notify(api, s.tgId, text).catch((e) => console.error('[expiry] Ошибка уведомления продавца:', e))));
   } catch (e) {
     console.error("[expiry] Ошибка уведомления продавцов:", e);
   }

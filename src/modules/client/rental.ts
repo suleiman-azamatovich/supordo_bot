@@ -19,7 +19,7 @@
 import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
-import { BoardStatus } from "@prisma/client";
+import { BoardStatus, Role } from "@prisma/client";
 import { fmtPrice, fmtDuration, fmtDate } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
 import { sendMBankQR, notifyAdminsNewPayment } from "./helpers";
@@ -147,7 +147,7 @@ rentalHandlers.on("message:photo", async (ctx) => {
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
       await Promise.all(admins.map((admin) =>
         ctx.api.sendPhoto(Number(admin.tgId), fileId, {
           caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,
@@ -157,7 +157,7 @@ rentalHandlers.on("message:photo", async (ctx) => {
             .text("❌ Отклонить", `pay:reject:${proofId}`)
             .row()
             .text("💬 Ответить", `admin:chat_client:${proofId}`),
-        }).catch(() => { })
+        }).catch((e) => console.error('[rental] Ошибка отправки фото админу:', e))
       ));
       await ctx.reply("✅ Фото отправлено администратору.");
     } catch {

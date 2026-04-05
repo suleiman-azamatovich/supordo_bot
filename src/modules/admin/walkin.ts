@@ -73,8 +73,8 @@ walkinHandlers.callbackQuery(/^walkin:board:(\d+)$/, async (ctx) => {
   ctx.session.walkin = { boardId };
 
   const tariffs = await prisma.tariff.findMany({
-    where: { spotId },
-    orderBy: { durationMinutes: "asc" },
+    where: { spotId, isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { durationMinutes: "asc" }],
   });
 
   const board = await prisma.board.findUniqueOrThrow({ where: { id: boardId } });

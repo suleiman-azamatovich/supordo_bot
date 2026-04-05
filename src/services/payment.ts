@@ -6,7 +6,7 @@
  *
  * @module
  */
-import { PaymentProofStatus, PaymentProofKind } from "@prisma/client";
+import { PaymentProofStatus, PaymentProofKind, AuditAction } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import * as rentalService from "./rental";
@@ -46,10 +46,10 @@ export async function approvePayment(proofId: number, adminUserId: number) {
 
   const proof = await prisma.paymentProof.update({
     where: { id: proofId },
-    data: { status: PaymentProofStatus.APPROVED, reviewedBy: adminUserId },
+    data: { status: PaymentProofStatus.APPROVED, reviewedBy: adminUserId, reviewedAt: new Date() },
   });
 
-  await audit.log(adminUserId, "PaymentProof", proofId, "APPROVED");
+  await audit.log(adminUserId, "PaymentProof", proofId, AuditAction.PAYMENT_APPROVED);
 
   if (proof.kind === PaymentProofKind.RENTAL) {
     await rentalService.approveRental(proof.refId, adminUserId);
@@ -80,10 +80,10 @@ export async function rejectPayment(proofId: number, adminUserId: number) {
 
   const proof = await prisma.paymentProof.update({
     where: { id: proofId },
-    data: { status: PaymentProofStatus.REJECTED, reviewedBy: adminUserId },
+    data: { status: PaymentProofStatus.REJECTED, reviewedBy: adminUserId, reviewedAt: new Date() },
   });
 
-  await audit.log(adminUserId, "PaymentProof", proofId, "REJECTED");
+  await audit.log(adminUserId, "PaymentProof", proofId, AuditAction.PAYMENT_REJECTED);
 
   if (proof.kind === PaymentProofKind.RENTAL) {
     await prisma.rental.update({

@@ -28,9 +28,9 @@ export async function notify(
     if (user) {
       prisma.notification.create({
         data: { userId: user.id, text: stripHtml(text) },
-      }).catch(() => { });
+      }).catch((e) => console.error('[notify] Ошибка сохранения уведомления:', e));
     }
-  }).catch(() => { });
+  }).catch((e) => console.error('[notify] Ошибка поиска пользователя:', e));
 
   // Send message
   try {

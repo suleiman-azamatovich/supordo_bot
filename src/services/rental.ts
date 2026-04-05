@@ -12,6 +12,7 @@ import {
   BoardStatus,
   PaymentProofKind,
   PaymentProofStatus,
+  AuditAction,
 } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
@@ -118,7 +119,7 @@ export async function createRental(params: {
     return r;
   });
 
-  await audit.log(params.userId, "Rental", rental.id, "CREATED", {
+  await audit.log(params.userId, "Rental", rental.id, AuditAction.CREATED, {
     tariffId: tariff.id,
     price: tariff.price,
     sellerUserId: params.sellerUserId,
@@ -171,7 +172,7 @@ export async function createWalkinRental(params: {
     return r;
   });
 
-  await audit.log(params.sellerUserId, "Rental", rental.id, "WALKIN_CREATED", {
+  await audit.log(params.sellerUserId, "Rental", rental.id, AuditAction.WALKIN_CREATED, {
     tariffId: tariff.id,
     price: tariff.price,
     clientName: params.clientName,
@@ -189,7 +190,7 @@ export async function moveToWaitPayment(rentalId: number, userId: number) {
     where: { id: rentalId },
     data: { status: RentalStatus.WAIT_PAYMENT },
   });
-  await audit.log(userId, "Rental", rentalId, "WAIT_PAYMENT");
+  await audit.log(userId, "Rental", rentalId, AuditAction.WAIT_PAYMENT);
   return rental;
 }
 
@@ -236,7 +237,7 @@ export async function submitPayment(params: {
     data: { status: RentalStatus.WAIT_ADMIN },
   });
 
-  await audit.log(params.userId, "PaymentProof", proof.id, "SUBMITTED", {
+  await audit.log(params.userId, "PaymentProof", proof.id, AuditAction.SUBMITTED, {
     rentalId: params.rentalId,
     amount: params.amount,
   });
@@ -267,7 +268,7 @@ export async function approveRental(rentalId: number, adminUserId: number) {
     where: { id: updated.boardId },
     data: { status: BoardStatus.RENTED },
   });
-  await audit.log(adminUserId, "Rental", rentalId, "APPROVED_AND_RENTED");
+  await audit.log(adminUserId, "Rental", rentalId, AuditAction.APPROVED_AND_RENTED);
   return updated;
 }
 
@@ -289,7 +290,7 @@ export async function acceptReturn(rentalId: number, sellerUserId: number) {
     });
     return r;
   });
-  await audit.log(sellerUserId, "Rental", rentalId, "RETURNED");
+  await audit.log(sellerUserId, "Rental", rentalId, AuditAction.RETURNED);
   return rental;
 }
 
@@ -310,28 +311,44 @@ export async function completeReturn(rentalId: number, actorUserId: number) {
 
   const { overdueCost } = await calculateOverdueCost(rentalBefore);
 
-  await acceptReturn(rentalId, actorUserId);
+  // Атомарная транзакция: возврат + создание чека просрочки
+  const { overdueProofId } = await prisma.$transaction(async (tx) => {
+    // Возврат доски
+    await tx.rental.update({
+      where: { id: rentalId },
+      data: { status: RentalStatus.RETURNED, endAt: new Date() },
+    });
+    await tx.board.update({
+      where: { id: rentalBefore.boardId },
+      data: { status: BoardStatus.AVAILABLE },
+    });
+
+    // Создание чека просрочки (если есть)
+    let proofId: number | null = null;
+    if (overdueCost > 0) {
+      const proof = await tx.paymentProof.create({
+        data: {
+          kind: PaymentProofKind.OVERDUE,
+          refId: rentalId,
+          amount: overdueCost,
+          userId: rentalBefore.userId,
+          text: `Просрочка по аренде #${rentalId}`,
+        },
+      });
+      proofId = proof.id;
+    }
+
+    return { overdueProofId: proofId };
+  });
+
+  await audit.log(actorUserId, "Rental", rentalId, AuditAction.RETURNED);
+
   const receipt = await getRentalReceipt(rentalId);
 
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
     include: { board: true, user: true },
   });
-
-  // If overdue, create payment proof for the overdue amount
-  let overdueProofId: number | null = null;
-  if (overdueCost > 0) {
-    const proof = await prisma.paymentProof.create({
-      data: {
-        kind: PaymentProofKind.OVERDUE,
-        refId: rentalId,
-        amount: overdueCost,
-        userId: rentalBefore.userId,
-        text: `Просрочка по аренде #${rentalId}`,
-      },
-    });
-    overdueProofId = proof.id;
-  }
 
   // Build client message
   let clientMsg = `✅ <b>Аренда завершена!</b>\n\n` + receipt;
@@ -400,7 +417,7 @@ export async function extendRental(rentalId: number, minutes: number, userId: nu
   });
 
   const netMinutes = Math.max(0, minutes - overdueMinutes);
-  await audit.log(userId, 'Rental', rentalId, 'EXTENDED', {
+  await audit.log(userId, 'Rental', rentalId, AuditAction.EXTENDED, {
     addedMinutes: minutes,
     extensionCost: cost,
     overdueMinutes,
@@ -470,7 +487,7 @@ export async function closeOverdue(rentalId: number, userId: number) {
     return { updated, closedMinutes: overdue, overdueCost, newExtra };
   });
 
-  await audit.log(userId, 'Rental', rentalId, 'CLOSE_OVERDUE', {
+  await audit.log(userId, 'Rental', rentalId, AuditAction.CLOSE_OVERDUE, {
     overdueMinutes: result.closedMinutes,
     overdueCost: result.overdueCost,
     totalExtra: result.newExtra,
@@ -519,7 +536,7 @@ export async function requestCloseOverdue(rentalId: number, userId: number) {
     },
   });
 
-  await audit.log(userId, 'PaymentProof', proof.id, 'SUBMITTED', {
+  await audit.log(userId, 'PaymentProof', proof.id, AuditAction.SUBMITTED, {
     rentalId,
     overdueCost,
     overdueMinutes,
@@ -547,7 +564,7 @@ export async function requestExtend(rentalId: number, minutes: number, userId: n
     data: { pendingExtraMinutes: minutes },
   });
 
-  await audit.log(userId, 'Rental', rentalId, 'EXTEND_REQUESTED', {
+  await audit.log(userId, 'Rental', rentalId, AuditAction.EXTEND_REQUESTED, {
     requestedMinutes: minutes,
   });
 
@@ -561,7 +578,7 @@ export async function rejectExtend(rentalId: number, adminUserId: number) {
     data: { pendingExtraMinutes: null },
   });
 
-  await audit.log(adminUserId, 'Rental', rentalId, 'EXTEND_REJECTED');
+  await audit.log(adminUserId, 'Rental', rentalId, AuditAction.EXTEND_REJECTED);
   return updated;
 }
 
@@ -596,6 +613,14 @@ const CANCELLABLE_STATUSES: RentalStatus[] = [
  */
 export async function cancelRental(rentalId: number, userId: number, requireOwner = false) {
   const updated = await prisma.$transaction(async (tx) => {
+    // Блокировка строки аренды для предотвращения гонок
+    const [locked] = await tx.$queryRawUnsafe<{ id: number; status: string }[]>(
+      `SELECT id, status FROM "Rental" WHERE id = $1 FOR UPDATE`, rentalId
+    );
+    if (!locked) {
+      throw new Error("Аренда не найдена");
+    }
+
     const rental = await tx.rental.findUniqueOrThrow({
       where: { id: rentalId },
     });
@@ -632,7 +657,7 @@ export async function cancelRental(rentalId: number, userId: number, requireOwne
     return r;
   });
 
-  await audit.log(userId, "Rental", rentalId, "CANCELLED");
+  await audit.log(userId, "Rental", rentalId, AuditAction.CANCELLED);
   return updated;
 }
 

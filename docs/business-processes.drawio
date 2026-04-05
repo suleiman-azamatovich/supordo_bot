@@ -1,153 +1,179 @@
 <mxfile host="65bd71144e">
     <diagram id="rental-flow" name="Аренда (основной поток)">
-        <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1600" math="0" shadow="0">
+        <mxGraphModel dx="1454" dy="728" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1600" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
-                <mxCell id="title1" value="ОСНОВНОЙ ПОТОК АРЕНДЫ (CLIENT -&gt; ADMIN)&lt;br&gt;Клиент сканирует QR / выбирает доску -&gt; оплата -&gt; одобрение -&gt; таймер -&gt; возврат" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="title1" value="ОСНОВНОЙ ПОТОК АРЕНДЫ (CLIENT -&gt; ADMIN)&lt;br&gt;Клиент сканирует QR / выбирает доску -&gt; оплата -&gt; одобрение -&gt; таймер -&gt; возврат" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=16;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="400" y="20" width="800" height="50" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="lane_client" value="КЛИЕНТ" style="shape=swimlane;html=1;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=14;horizontal=1;" vertex="1" parent="1">
+                <mxCell id="lane_client" value="КЛИЕНТ" style="shape=swimlane;html=1;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=14;horizontal=1;" parent="1" vertex="1">
                     <mxGeometry x="40" y="80" width="2320" height="280" as="geometry"/>
                 </mxCell>
-                <mxCell id="lane_system" value="СИСТЕМА (автоматически)" style="shape=swimlane;html=1;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;horizontal=1;" vertex="1" parent="1">
-                    <mxGeometry x="40" y="360" width="2320" height="240" as="geometry"/>
-                </mxCell>
-                <mxCell id="lane_admin" value="АДМИНИСТРАТОР" style="shape=swimlane;html=1;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=14;horizontal=1;" vertex="1" parent="1">
-                    <mxGeometry x="40" y="600" width="2320" height="280" as="geometry"/>
-                </mxCell>
-
-                <mxCell id="c_start" value="" style="ellipse;fillColor=#000000;strokeColor=#000000;" vertex="1" parent="lane_client">
+                <mxCell id="c_start" value="" style="ellipse;fillColor=#000000;strokeColor=#000000;" parent="lane_client" vertex="1">
                     <mxGeometry x="40" y="100" width="30" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_scan" value="Сканирует QR-код&lt;br&gt;или выбирает доску&lt;br&gt;из списка" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="lane_client">
+                <mxCell id="c_scan" value="Сканирует QR-код&lt;br&gt;или выбирает доску&lt;br&gt;из списка" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="lane_client" vertex="1">
                     <mxGeometry x="110" y="80" width="160" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_tariff" value="Выбирает тариф&lt;br&gt;(30м / 60м / 120м)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="lane_client">
+                <mxCell id="c_tariff" value="Выбирает тариф&lt;br&gt;(30м / 60м / 120м)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="lane_client" vertex="1">
                     <mxGeometry x="320" y="80" width="160" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_safety" value="Принимает правила&lt;br&gt;безопасности" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="lane_client">
+                <mxCell id="c_safety" value="Принимает правила&lt;br&gt;безопасности" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="lane_client" vertex="1">
                     <mxGeometry x="530" y="80" width="140" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_pay_qr" value="Получает QR MBank&lt;br&gt;для оплаты" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="lane_client">
+                <mxCell id="c_pay_qr" value="Получает QR MBank&lt;br&gt;для оплаты" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="lane_client" vertex="1">
                     <mxGeometry x="910" y="80" width="140" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_wait" value="Ожидает&lt;br&gt;подтверждения&lt;br&gt;от админа" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="lane_client">
+                <mxCell id="c_wait" value="Ожидает&lt;br&gt;подтверждения&lt;br&gt;от админа" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="lane_client" vertex="1">
                     <mxGeometry x="1100" y="80" width="140" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_ride" value="Катается!&lt;br&gt;Таймер идёт" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_client">
+                <mxCell id="c_ride" value="Катается!&lt;br&gt;Таймер идёт" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_client" vertex="1">
                     <mxGeometry x="1500" y="80" width="140" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_return_notif" value="Получает уведомление:&lt;br&gt;Верните доску!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="lane_client">
+                <mxCell id="c_return_notif" value="Получает уведомление:&lt;br&gt;Верните доску!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="lane_client" vertex="1">
                     <mxGeometry x="1700" y="80" width="150" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_return_board" value="Возвращает&lt;br&gt;доску на точку" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="lane_client">
+                <mxCell id="c_return_board" value="Возвращает&lt;br&gt;доску на точку" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="lane_client" vertex="1">
                     <mxGeometry x="1910" y="80" width="140" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="c_done" value="Готово!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_client">
+                <mxCell id="c_done" value="Готово!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_client" vertex="1">
                     <mxGeometry x="2110" y="80" width="120" height="70" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_start" target="c_scan" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_scan" target="c_tariff" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_tariff" target="c_safety" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e_pay" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_pay_qr" target="c_wait" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e_ride" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_ride" target="c_return_notif" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e_ret1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_return_notif" target="c_return_board" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="e_ret2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="c_return_board" target="c_done" parent="lane_client"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-                <mxCell id="s_create" value="createRental()&lt;br&gt;&lt;br&gt;Статус: CREATED&lt;br&gt;Доска: RENTED&lt;br&gt;(заблокирована)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="lane_system">
+                <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_start" target="c_scan" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_scan" target="c_tariff" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_tariff" target="c_safety" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_pay" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_pay_qr" target="c_wait" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_ride" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_ride" target="c_return_notif" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_ret1" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_return_notif" target="c_return_board" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_ret2" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_client" source="c_return_board" target="c_done" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="lane_system" value="СИСТЕМА (автоматически)" style="shape=swimlane;html=1;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;horizontal=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="360" width="2320" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_create" value="createRental()&lt;br&gt;&lt;br&gt;Статус: CREATED&lt;br&gt;Доска: RENTED&lt;br&gt;(заблокирована)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="lane_system" vertex="1">
                     <mxGeometry x="520" y="60" width="160" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_submit" value="submitPayment()&lt;br&gt;&lt;br&gt;WAIT_PAYMENT&lt;br&gt;-&gt; WAIT_ADMIN&lt;br&gt;PaymentProof: SUBMITTED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="lane_system">
+                <mxCell id="s_submit" value="submitPayment()&lt;br&gt;&lt;br&gt;WAIT_PAYMENT&lt;br&gt;-&gt; WAIT_ADMIN&lt;br&gt;PaymentProof: SUBMITTED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="lane_system" vertex="1">
                     <mxGeometry x="720" y="60" width="170" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_approve_r" value="approveRental()&lt;br&gt;&lt;br&gt;Статус: RENTED&lt;br&gt;startAt = now + 8мин&lt;br&gt;(грейс-период)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="lane_system">
+                <mxCell id="s_approve_r" value="approveRental()&lt;br&gt;&lt;br&gt;Статус: RENTED&lt;br&gt;startAt = now + 8мин&lt;br&gt;(грейс-период)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="lane_system" vertex="1">
                     <mxGeometry x="1290" y="60" width="170" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_expiry" value="expiryChecker&lt;br&gt;(каждые 30 сек)&lt;br&gt;&lt;br&gt;1. 10% осталось&lt;br&gt;2. Время вышло&lt;br&gt;3. Грейс истёк -&gt;&lt;br&gt;   WAIT_RETURN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="lane_system">
+                <mxCell id="s_expiry" value="expiryChecker&lt;br&gt;(каждые 30 сек)&lt;br&gt;&lt;br&gt;1. 10% осталось&lt;br&gt;2. Время вышло&lt;br&gt;3. Грейс истёк -&gt;&lt;br&gt;   WAIT_RETURN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="lane_system" vertex="1">
                     <mxGeometry x="1680" y="40" width="180" height="130" as="geometry"/>
                 </mxCell>
-                <mxCell id="s_return" value="acceptReturn()&lt;br&gt;&lt;br&gt;Статус: RETURNED&lt;br&gt;endAt = now&lt;br&gt;Доска: AVAILABLE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_system">
+                <mxCell id="s_return" value="acceptReturn()&lt;br&gt;&lt;br&gt;Статус: RETURNED&lt;br&gt;endAt = now&lt;br&gt;Доска: AVAILABLE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_system" vertex="1">
                     <mxGeometry x="2080" y="60" width="170" height="100" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="es1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="s_create" target="s_submit" parent="lane_system"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-                <mxCell id="cross1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#6c8ebf;" edge="1" parent="1" source="c_safety" target="s_create"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross2" value="QR MBank" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d6b656;html=1;" edge="1" parent="1" source="s_submit" target="c_pay_qr"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross4" value="Таймер запущен!" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;html=1;" edge="1" parent="1" source="s_approve_r" target="c_ride"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross5" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#6c8ebf;" edge="1" parent="1" source="c_return_board" target="s_return"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-                <mxCell id="a_notif" value="Получает уведомление:&lt;br&gt;Новая оплата" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_admin">
+                <mxCell id="es1" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_system" source="s_create" target="s_submit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="lane_admin" value="АДМИНИСТРАТОР" style="shape=swimlane;html=1;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=14;horizontal=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="600" width="2320" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="a_notif" value="Получает уведомление:&lt;br&gt;Новая оплата" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_admin" vertex="1">
                     <mxGeometry x="1060" y="70" width="150" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="a_review" value="Проверяет&lt;br&gt;фото чека" style="rhombus;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_admin">
+                <mxCell id="a_review" value="Проверяет&lt;br&gt;фото чека" style="rhombus;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_admin" vertex="1">
                     <mxGeometry x="1230" y="50" width="120" height="110" as="geometry"/>
                 </mxCell>
-                <mxCell id="a_approve" value="Одобряет оплату&lt;br&gt;pay:approve" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_admin">
+                <mxCell id="a_approve" value="Одобряет оплату&lt;br&gt;pay:approve" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_admin" vertex="1">
                     <mxGeometry x="1390" y="40" width="140" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="a_reject" value="Отклоняет&lt;br&gt;pay:reject&lt;br&gt;-&gt; WAIT_PAYMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="lane_admin">
+                <mxCell id="a_reject" value="Отклоняет&lt;br&gt;pay:reject&lt;br&gt;-&gt; WAIT_PAYMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="lane_admin" vertex="1">
                     <mxGeometry x="1390" y="130" width="140" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="a_request_info" value="Запрашивает&lt;br&gt;доп. информацию&lt;br&gt;(чат с клиентом)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="lane_admin">
-                    <mxGeometry x="1390" y="210" width="150" height="60" as="geometry"/>
+                <mxCell id="a_request_info" value="Запрашивает&lt;br&gt;доп. информацию&lt;br&gt;(чат с клиентом)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="lane_admin" vertex="1">
+                    <mxGeometry x="1550" y="200" width="150" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="a_accept_ret" value="Принимает&lt;br&gt;возврат доски&lt;br&gt;seller:return" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="lane_admin">
+                <mxCell id="a_accept_ret" value="Принимает&lt;br&gt;возврат доски&lt;br&gt;seller:return" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="lane_admin" vertex="1">
                     <mxGeometry x="1900" y="70" width="150" height="70" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="ea1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="a_notif" target="a_review" parent="lane_admin"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ea2" value="Да" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="a_review" target="a_approve" parent="lane_admin"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ea3" value="Нет" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="a_review" target="a_reject" parent="lane_admin"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ea3b" value="?" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="a_review" target="a_request_info" parent="lane_admin"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-                <mxCell id="cross3" value="Уведомление всем админам" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;html=1;" edge="1" parent="1" source="c_wait" target="a_notif"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross3b" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="a_approve" target="s_approve_r"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross6" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;" edge="1" parent="1" source="s_expiry" target="a_accept_ret"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cross7" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="a_accept_ret" target="s_return"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-                <mxCell id="legend" value="ЛЕГЕНДА" style="swimlane;html=1;startSize=25;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="ea1" style="edgeStyle=orthogonalEdgeStyle;" parent="lane_admin" source="a_notif" target="a_review" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ea2" value="Да" style="edgeStyle=orthogonalEdgeStyle;html=1;" parent="lane_admin" source="a_review" target="a_approve" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ea3" value="Нет" style="edgeStyle=orthogonalEdgeStyle;html=1;" parent="lane_admin" source="a_review" target="a_reject" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ea3b" value="?" style="edgeStyle=orthogonalEdgeStyle;html=1;" parent="lane_admin" source="a_review" target="a_request_info" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#6c8ebf;" parent="1" source="c_safety" target="s_create" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross2" value="QR MBank" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d6b656;html=1;" parent="1" source="s_submit" target="c_pay_qr" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross4" value="Таймер запущен!" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;html=1;" parent="1" source="s_approve_r" target="c_ride" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross5" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#6c8ebf;" parent="1" source="c_return_board" target="s_return" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross3" value="Уведомление всем админам" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;html=1;" parent="1" source="c_wait" target="a_notif" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross3b" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" parent="1" source="a_approve" target="s_approve_r" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross6" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;" parent="1" source="s_expiry" target="a_accept_ret" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cross7" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" parent="1" source="a_accept_ret" target="s_return" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="legend" value="ЛЕГЕНДА" style="swimlane;html=1;startSize=25;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="40" y="900" width="600" height="180" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg1" value="Действие клиента" style="rounded=1;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="legend">
+                <mxCell id="leg1" value="Действие клиента" style="rounded=1;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="legend" vertex="1">
                     <mxGeometry x="20" y="40" width="130" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg2" value="Действие системы" style="rounded=1;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="legend">
+                <mxCell id="leg2" value="Действие системы" style="rounded=1;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="legend" vertex="1">
                     <mxGeometry x="170" y="40" width="130" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg3" value="Действие админа" style="rounded=1;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="legend">
+                <mxCell id="leg3" value="Действие админа" style="rounded=1;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="legend" vertex="1">
                     <mxGeometry x="320" y="40" width="130" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg4" value="Ошибка / Просрочка" style="rounded=1;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="legend">
+                <mxCell id="leg4" value="Ошибка / Просрочка" style="rounded=1;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="legend" vertex="1">
                     <mxGeometry x="20" y="80" width="130" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg5" value="Чат / Общение" style="rounded=1;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="legend">
+                <mxCell id="leg5" value="Чат / Общение" style="rounded=1;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="legend" vertex="1">
                     <mxGeometry x="170" y="80" width="130" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg6" value="Межпроцессная связь" style="rounded=0;html=1;dashed=1;strokeColor=#999999;" vertex="1" parent="legend">
+                <mxCell id="leg6" value="Межпроцессная связь" style="rounded=0;html=1;dashed=1;strokeColor=#999999;" parent="legend" vertex="1">
                     <mxGeometry x="320" y="80" width="150" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="leg7" value="Грейс-период старта: 8 мин (рабоч.) / 10 сек (тест)&lt;br&gt;Грейс-период возврата: 10 мин (рабоч.) / 10 сек (тест)&lt;br&gt;Авто-отмена неоплаченной аренды: 15 мин" style="text;html=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontStyle=2;" vertex="1" parent="legend">
+                <mxCell id="leg7" value="Грейс-период старта: 8 мин (рабоч.) / 10 сек (тест)&lt;br&gt;Грейс-период возврата: 10 мин (рабоч.) / 10 сек (тест)&lt;br&gt;Авто-отмена неоплаченной аренды: 15 мин" style="text;html=1;align=left;verticalAlign=middle;fillColor=none;strokeColor=none;fontStyle=2;" parent="legend" vertex="1">
                     <mxGeometry x="20" y="120" width="560" height="50" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="walkin-flow" name="Walk-in аренда">
         <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="800" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="wt" value="WALK-IN АРЕНДА (создаёт админ на точке)&lt;br&gt;Клиент пришёл лично. Оплата наличными. Без подтверждения через бота." style="text;html=1;align=center;fontSize=14;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="200" y="20" width="700" height="50" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="w_start" value="" style="ellipse;fillColor=#000000;" vertex="1" parent="1">
                     <mxGeometry x="40" y="150" width="30" height="30" as="geometry"/>
                 </mxCell>
@@ -172,32 +198,41 @@
                 <mxCell id="w_end" value="" style="ellipse;fillColor=#000000;strokeColor=#000000;strokeWidth=3;" vertex="1" parent="1">
                     <mxGeometry x="1460" y="145" width="30" height="30" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="we0" edge="1" source="w_start" target="w1" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we1" edge="1" source="w1" target="w2" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we2" edge="1" source="w2" target="w3" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we3" edge="1" source="w3" target="w4" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we4" edge="1" source="w4" target="w5" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we5" edge="1" source="w5" target="w6" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="we6" edge="1" source="w6" target="w_end" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="we0" edge="1" source="w_start" target="w1" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we1" edge="1" source="w1" target="w2" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we2" edge="1" source="w2" target="w3" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we3" edge="1" source="w3" target="w4" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we4" edge="1" source="w4" target="w5" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we5" edge="1" source="w5" target="w6" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="we6" edge="1" source="w6" target="w_end" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="w_note" value="ОТЛИЧИЯ ОТ ОБЫЧНОЙ АРЕНДЫ:&lt;br&gt;&lt;br&gt;- Нет этапа оплаты через MBank&lt;br&gt;- Нет ожидания подтверждения админом&lt;br&gt;- Таймер стартует СРАЗУ (startAt = now)&lt;br&gt;- clientName заполняется вручную (не из Telegram)&lt;br&gt;- sellerUserId = ID админа, создавшего аренду&lt;br&gt;- Далее процесс возврата ОДИНАКОВЫЙ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=10;spacingTop=5;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="110" y="280" width="400" height="180" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="status-machine" name="Статусы аренды (State Machine)">
         <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="st_title" value="МАШИНА СОСТОЯНИЙ АРЕНДЫ (RentalStatus)" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="400" y="20" width="500" height="40" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="st_created" value="&lt;b&gt;CREATED&lt;/b&gt;&lt;br&gt;&lt;br&gt;Аренда создана.&lt;br&gt;Доска заблокирована.&lt;br&gt;Оплата не начата." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;align=center;" vertex="1" parent="1">
                     <mxGeometry x="100" y="120" width="200" height="100" as="geometry"/>
                 </mxCell>
@@ -219,60 +254,74 @@
                 <mxCell id="st_cancelled" value="&lt;b&gt;CANCELLED&lt;/b&gt;&lt;br&gt;&lt;br&gt;Отменено.&lt;br&gt;Доска: AVAILABLE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;verticalAlign=top;align=center;" vertex="1" parent="1">
                     <mxGeometry x="400" y="450" width="200" height="100" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="st_e1" value="submitPayment()&lt;br&gt;авто" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_created" target="st_wait_pay" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="st_e2" value="submitPayment()&lt;br&gt;чек отправлен" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_pay" target="st_wait_admin" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="st_e3" value="approveRental()&lt;br&gt;Админ одобрил" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_admin" target="st_rented" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+                <mxCell id="st_e1" value="submitPayment()&lt;br&gt;авто" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_created" target="st_wait_pay" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="st_e2" value="submitPayment()&lt;br&gt;чек отправлен" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_pay" target="st_wait_admin" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="st_e3" value="approveRental()&lt;br&gt;Админ одобрил" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_admin" target="st_rented" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="st_e3b" value="rejectPayment()&lt;br&gt;Отклонено" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#b85450;" edge="1" source="st_wait_admin" target="st_wait_pay" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="800" y="280"/><mxPoint x="500" y="280"/></Array>
+                        <Array as="points">
+                            <mxPoint x="800" y="280"/>
+                            <mxPoint x="500" y="280"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="st_e4" value="expiryChecker&lt;br&gt;грейс истёк" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_rented" target="st_wait_ret" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="st_e5" value="acceptReturn()&lt;br&gt;Доска принята" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_ret" target="st_returned" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+                <mxCell id="st_e4" value="expiryChecker&lt;br&gt;грейс истёк" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_rented" target="st_wait_ret" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="st_e5" value="acceptReturn()&lt;br&gt;Доска принята" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_wait_ret" target="st_returned" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="st_e5b" value="acceptReturn()&lt;br&gt;Досрочный возврат" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="st_rented" target="st_returned" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="1100" y="400"/></Array>
+                        <Array as="points">
+                            <mxPoint x="1100" y="400"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="st_e6" value="extendRental()&lt;br&gt;Продлено" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#82b366;curved=1;" edge="1" source="st_wait_ret" target="st_rented" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="1250" y="80"/><mxPoint x="1100" y="80"/></Array>
+                        <Array as="points">
+                            <mxPoint x="1250" y="80"/>
+                            <mxPoint x="1100" y="80"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="st_e7" value="cancelRental()&lt;br&gt;Клиент отменил" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#b85450;" edge="1" source="st_created" target="st_cancelled" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="200" y="500"/></Array>
+                        <Array as="points">
+                            <mxPoint x="200" y="500"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="st_e8" value="expiryChecker&lt;br&gt;15 мин без оплаты" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#b85450;" edge="1" source="st_wait_pay" target="st_cancelled" parent="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="st_walkin" value="" style="ellipse;fillColor=#000000;" vertex="1" parent="1">
                     <mxGeometry x="1080" y="50" width="20" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="st_ew" value="createWalkinRental()&lt;br&gt;Walk-in" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" source="st_walkin" target="st_rented" parent="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="st_note" value="&lt;b&gt;КЛЮЧЕВЫЕ МОМЕНТЫ:&lt;/b&gt;&lt;br&gt;&lt;br&gt;- Доска блокируется (RENTED) при CREATED&lt;br&gt;- startAt устанавливается только при RENTED&lt;br&gt;- Walk-in: сразу в RENTED, startAt = now&lt;br&gt;- Продление из WAIT_RETURN -&gt; RENTED&lt;br&gt;- Авто-отмена: 15 мин без оплаты&lt;br&gt;- Отклонение: WAIT_ADMIN -&gt; WAIT_PAYMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=10;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="100" y="350" width="400" height="180" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="extension-flow" name="Продление и просрочка">
         <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="ext_title" value="ПРОДЛЕНИЕ АРЕНДЫ И УПРАВЛЕНИЕ ПРОСРОЧКОЙ" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="350" y="20" width="600" height="40" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="ext_box1" value="ПУТЬ 1: Клиент запрашивает продление" style="swimlane;html=1;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="80" width="800" height="250" as="geometry"/>
                 </mxCell>
@@ -291,12 +340,18 @@
                 <mxCell id="ext_c4_no" value="Отклонено&lt;br&gt;ext:reject&lt;br&gt;&lt;br&gt;pendingExtra = null" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="ext_box1">
                     <mxGeometry x="600" y="150" width="170" height="70" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="ex_e1" edge="1" source="ext_c1" target="ext_c2" parent="ext_box1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ex_e2" edge="1" source="ext_c2" target="ext_c3" parent="ext_box1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ex_e3" value="Да" style="html=1;" edge="1" source="ext_c3" target="ext_c4_yes" parent="ext_box1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ex_e4" value="Нет" style="html=1;" edge="1" source="ext_c3" target="ext_c4_no" parent="ext_box1"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="ex_e1" edge="1" source="ext_c1" target="ext_c2" parent="ext_box1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ex_e2" edge="1" source="ext_c2" target="ext_c3" parent="ext_box1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ex_e3" value="Да" style="html=1;" edge="1" source="ext_c3" target="ext_c4_yes" parent="ext_box1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ex_e4" value="Нет" style="html=1;" edge="1" source="ext_c3" target="ext_c4_no" parent="ext_box1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="ext_box2" value="ПУТЬ 2: Админ продлевает вручную" style="swimlane;html=1;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="360" width="800" height="200" as="geometry"/>
                 </mxCell>
@@ -312,11 +367,15 @@
                 <mxCell id="ext_a4" value="extendRental()&lt;br&gt;&lt;br&gt;Если WAIT_RETURN:&lt;br&gt;- просрочка покрывается&lt;br&gt;- netMin = max(0, N - overdue)&lt;br&gt;- статус -&gt; RENTED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="ext_box2">
                     <mxGeometry x="590" y="35" width="190" height="120" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="exa1" edge="1" source="ext_a1" target="ext_a2" parent="ext_box2"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="exa2" edge="1" source="ext_a2" target="ext_a3" parent="ext_box2"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="exa3" edge="1" source="ext_a3" target="ext_a4" parent="ext_box2"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="exa1" edge="1" source="ext_a1" target="ext_a2" parent="ext_box2">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="exa2" edge="1" source="ext_a2" target="ext_a3" parent="ext_box2">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="exa3" edge="1" source="ext_a3" target="ext_a4" parent="ext_box2">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="overdue_box" value="УПРАВЛЕНИЕ ПРОСРОЧКОЙ" style="swimlane;html=1;startSize=30;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="590" width="800" height="280" as="geometry"/>
                 </mxCell>
@@ -329,24 +388,20 @@
                 <mxCell id="od_pay" value="&lt;b&gt;Оплата просрочки:&lt;/b&gt;&lt;br&gt;&lt;br&gt;completeReturn() создаёт&lt;br&gt;PaymentProof(OVERDUE)&lt;br&gt;&lt;br&gt;Клиенту: Задолженность:&lt;br&gt;X сом. Оплатите через MBank&lt;br&gt;&lt;br&gt;Админ одобряет/отклоняет" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=10;verticalAlign=top;spacingTop=5;" vertex="1" parent="overdue_box">
                     <mxGeometry x="550" y="40" width="220" height="180" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="formula_box" value="&lt;b&gt;ФОРМУЛА ПРОДЛЕНИЯ С ПРОСРОЧКОЙ&lt;/b&gt;&lt;br&gt;&lt;br&gt;Пример: аренда просрочена на 5 мин, клиент запросил +15 мин&lt;br&gt;&lt;br&gt;1. extraMinutes += 15&lt;br&gt;2. overdueMinutes = 5 (текущая)&lt;br&gt;3. netMinutes = max(0, 15 - 5) = 10 мин (реальный выигрыш)&lt;br&gt;4. Статус: WAIT_RETURN -&gt; RENTED&lt;br&gt;&lt;br&gt;Клиент видит: +15 мин (из них 5 покрыли просрочку, чистый выигрыш: 10 мин)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=10;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="880" y="360" width="500" height="200" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="expiry-checker" name="Expiry Checker">
         <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="exp_title" value="ФОНОВЫЙ ПРОЦЕСС: EXPIRY CHECKER (каждые 30 секунд)" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="350" y="20" width="600" height="40" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="exp_cancel_box" value="1. АВТО-ОТМЕНА НЕОПЛАЧЕННЫХ АРЕНД" style="swimlane;html=1;startSize=30;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="80" width="780" height="200" as="geometry"/>
                 </mxCell>
@@ -362,10 +417,15 @@
                 <mxCell id="ec4" value="Клиенту:&lt;br&gt;Аренда отменена -&lt;br&gt;не оплачена вовремя" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="exp_cancel_box">
                     <mxGeometry x="620" y="40" width="140" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="ece1" edge="1" source="ec1" target="ec2" parent="exp_cancel_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ece2" value="Да" style="html=1;" edge="1" source="ec2" target="ec3" parent="exp_cancel_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ece3" edge="1" source="ec3" target="ec4" parent="exp_cancel_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="ece1" edge="1" source="ec1" target="ec2" parent="exp_cancel_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ece2" value="Да" style="html=1;" edge="1" source="ec2" target="ec3" parent="exp_cancel_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ece3" edge="1" source="ec3" target="ec4" parent="exp_cancel_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="exp_warn_box" value="2. ПРЕДУПРЕЖДЕНИЕ: 10% ВРЕМЕНИ ОСТАЛОСЬ" style="swimlane;html=1;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="310" width="780" height="160" as="geometry"/>
                 </mxCell>
@@ -381,9 +441,12 @@
                 <mxCell id="ew_note" value="&lt;i&gt;Однократно!&lt;br&gt;(warnedRentals)&lt;/i&gt;" style="text;html=1;fillColor=none;strokeColor=none;" vertex="1" parent="exp_warn_box">
                     <mxGeometry x="630" y="55" width="120" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="ewe1" edge="1" source="ew1" target="ew2" parent="exp_warn_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ewe2" value="Да" style="html=1;" edge="1" source="ew2" target="ew3" parent="exp_warn_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="ewe1" edge="1" source="ew1" target="ew2" parent="exp_warn_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ewe2" value="Да" style="html=1;" edge="1" source="ew2" target="ew3" parent="exp_warn_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="exp_expired_box" value="3. ВРЕМЯ ВЫШЛО (грейс-период)" style="swimlane;html=1;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="500" width="550" height="160" as="geometry"/>
                 </mxCell>
@@ -393,8 +456,9 @@
                 <mxCell id="ee2" value="Клиенту:&lt;br&gt;Время истекло!&lt;br&gt;Грейс-период X мин" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="exp_expired_box">
                     <mxGeometry x="240" y="45" width="180" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="eee1" value="Да" style="html=1;" edge="1" source="ee1" target="ee2" parent="exp_expired_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="eee1" value="Да" style="html=1;" edge="1" source="ee1" target="ee2" parent="exp_expired_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="exp_overdue_box" value="4. ГРЕЙС ИСТЁК - ПРОСРОЧКА" style="swimlane;html=1;startSize=30;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="40" y="690" width="700" height="180" as="geometry"/>
                 </mxCell>
@@ -407,9 +471,12 @@
                 <mxCell id="eo3" value="Клиенту:&lt;br&gt;Грейс истёк!&lt;br&gt;10 сом/мин&lt;br&gt;&lt;br&gt;Админам:&lt;br&gt;Просрочка!" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="exp_overdue_box">
                     <mxGeometry x="420" y="35" width="190" height="120" as="geometry"/>
                 </mxCell>
-                <mxCell id="eoe1" value="Да" style="html=1;" edge="1" source="eo1" target="eo2" parent="exp_overdue_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="eoe2" edge="1" source="eo2" target="eo3" parent="exp_overdue_box"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="eoe1" value="Да" style="html=1;" edge="1" source="eo1" target="eo2" parent="exp_overdue_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="eoe2" edge="1" source="eo2" target="eo3" parent="exp_overdue_box">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="timeline_box" value="ТАЙМЛАЙН АРЕНДЫ" style="swimlane;html=1;startSize=30;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="860" y="80" width="700" height="300" as="geometry"/>
                 </mxCell>
@@ -449,17 +516,14 @@
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="board-status" name="Статусы досок">
         <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="bt" value="ЖИЗНЕННЫЙ ЦИКЛ ДОСКИ (BoardStatus)" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="300" y="20" width="500" height="40" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="b_avail" value="&lt;b&gt;AVAILABLE&lt;/b&gt;&lt;br&gt;&lt;br&gt;Доска свободна.&lt;br&gt;Готова к аренде.&lt;br&gt;Видна клиентам." style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=middle;align=center;" vertex="1" parent="1">
                     <mxGeometry x="100" y="200" width="200" height="150" as="geometry"/>
                 </mxCell>
@@ -469,13 +533,15 @@
                 <mxCell id="b_service" value="&lt;b&gt;SERVICE&lt;/b&gt;&lt;br&gt;&lt;br&gt;На обслуживании.&lt;br&gt;Недоступна.&lt;br&gt;Только админ." style="ellipse;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=middle;align=center;" vertex="1" parent="1">
                     <mxGeometry x="100" y="470" width="200" height="150" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="be1" value="createRental()&lt;br&gt;createWalkinRental()" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeWidth=2;" edge="1" source="b_avail" target="b_rented" parent="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="be2" value="acceptReturn()&lt;br&gt;cancelRental()" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeWidth=2;" edge="1" source="b_rented" target="b_avail" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="600" y="160"/><mxPoint x="200" y="160"/></Array>
+                        <Array as="points">
+                            <mxPoint x="600" y="160"/>
+                            <mxPoint x="200" y="160"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="be3" value="board:service" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;" edge="1" source="b_avail" target="b_service" parent="1">
@@ -483,31 +549,29 @@
                 </mxCell>
                 <mxCell id="be4" value="board:available" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;" edge="1" source="b_service" target="b_avail" parent="1">
                     <mxGeometry relative="1" as="geometry">
-                        <Array as="points"><mxPoint x="50" y="545"/><mxPoint x="50" y="275"/></Array>
+                        <Array as="points">
+                            <mxPoint x="50" y="545"/>
+                            <mxPoint x="50" y="275"/>
+                        </Array>
                     </mxGeometry>
                 </mxCell>
-
                 <mxCell id="b_note" value="&lt;b&gt;ВАЖНО:&lt;/b&gt;&lt;br&gt;&lt;br&gt;- Доска блокируется (-&gt; RENTED) ДО оплаты&lt;br&gt;  (при создании аренды в статусе CREATED)&lt;br&gt;- Это защита от двойной аренды&lt;br&gt;- Доска освобождается только при RETURNED или CANCELLED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=10;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="800" y="200" width="380" height="130" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-
     <diagram id="admin-dashboard" name="Админ-панель и меню клиента">
         <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-
                 <mxCell id="at" value="ПАНЕЛЬ АДМИНИСТРАТОРА - ДЕРЕВО ФУНКЦИЙ" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="350" y="20" width="600" height="40" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="ad_root" value="&lt;b&gt;Панель админа&lt;/b&gt;&lt;br&gt;admin:dashboard&lt;br&gt;&lt;br&gt;Сводка: оплаты, аренды,&lt;br&gt;возвраты, доски" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
                     <mxGeometry x="650" y="80" width="200" height="100" as="geometry"/>
                 </mxCell>
-
                 <mxCell id="ad_pay" value="&lt;b&gt;Оплаты&lt;/b&gt;&lt;br&gt;admin:payments&lt;br&gt;&lt;br&gt;- Список ожидающих&lt;br&gt;- Одобрить&lt;br&gt;- Отклонить&lt;br&gt;- Запросить инфо" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=10;verticalAlign=top;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="40" y="280" width="190" height="140" as="geometry"/>
                 </mxCell>
@@ -532,16 +596,30 @@
                 <mxCell id="ad_mode" value="&lt;b&gt;Режим&lt;/b&gt;&lt;br&gt;toggle_mode&lt;br&gt;&lt;br&gt;WORK: нормальные&lt;br&gt;тарифы и грейсы&lt;br&gt;&lt;br&gt;TEST: 10 сек грейсы&lt;br&gt;для тестирования" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=10;verticalAlign=top;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="1510" y="280" width="180" height="150" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="ade1" edge="1" source="ad_root" target="ad_pay" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade2" edge="1" source="ad_root" target="ad_ret" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade3" edge="1" source="ad_root" target="ad_boards" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade4" edge="1" source="ad_root" target="ad_reports" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade5" edge="1" source="ad_root" target="ad_walkin" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade6" edge="1" source="ad_root" target="ad_ext" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade7" edge="1" source="ad_root" target="ad_roles" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="ade8" edge="1" source="ad_root" target="ad_mode" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+                <mxCell id="ade1" edge="1" source="ad_root" target="ad_pay" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade2" edge="1" source="ad_root" target="ad_ret" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade3" edge="1" source="ad_root" target="ad_boards" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade4" edge="1" source="ad_root" target="ad_reports" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade5" edge="1" source="ad_root" target="ad_walkin" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade6" edge="1" source="ad_root" target="ad_ext" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade7" edge="1" source="ad_root" target="ad_roles" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ade8" edge="1" source="ad_root" target="ad_mode" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="cm_title" value="МЕНЮ КЛИЕНТА - ДЕРЕВО ФУНКЦИЙ" style="text;html=1;align=center;fontSize=16;fillColor=none;strokeColor=none;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="350" y="520" width="600" height="40" as="geometry"/>
                 </mxCell>
@@ -563,12 +641,21 @@
                 <mxCell id="cm_help" value="&lt;b&gt;Помощь&lt;/b&gt;&lt;br&gt;client:help" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=10;verticalAlign=top;spacingTop=5;" vertex="1" parent="1">
                     <mxGeometry x="960" y="740" width="140" height="60" as="geometry"/>
                 </mxCell>
-
-                <mxCell id="cme1" edge="1" source="cm_root" target="cm_boards" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cme2" edge="1" source="cm_root" target="cm_rent" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cme3" edge="1" source="cm_root" target="cm_qr" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cme4" edge="1" source="cm_root" target="cm_notif" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
-                <mxCell id="cme5" edge="1" source="cm_root" target="cm_help" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+                <mxCell id="cme1" edge="1" source="cm_root" target="cm_boards" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cme2" edge="1" source="cm_root" target="cm_rent" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cme3" edge="1" source="cm_root" target="cm_qr" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cme4" edge="1" source="cm_root" target="cm_notif" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cme5" edge="1" source="cm_root" target="cm_help" parent="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
             </root>
         </mxGraphModel>
     </diagram>

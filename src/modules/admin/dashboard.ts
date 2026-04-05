@@ -28,7 +28,7 @@ import {
 import * as rentalService from "../../services/rental";
 import * as audit from "../../services/audit";
 import { getNotifications } from "../../services/notify";
-import { RentalStatus, BoardStatus, PaymentProofStatus } from "@prisma/client";
+import { RentalStatus, BoardStatus, PaymentProofStatus, AuditAction } from "@prisma/client";
 import { config } from "../../bot/config";
 
 export const dashboardHandlers = new Composer<BotContext>();
@@ -163,7 +163,7 @@ dashboardHandlers.callbackQuery("admin:toggle_mode", async (ctx) => {
 
   const newMode = testMode ? "🏭 РАБОТА" : "🧪 ТЕСТ";
   rentalService.clearTestModeCache();
-  await audit.log(ctx.dbUser!.id, "system", 0, `Режим переключён на: ${newMode}`);
+  await audit.log(ctx.dbUser!.id, "system", 0, AuditAction.MODE_TOGGLED, { mode: newMode });
   await ctx.answerCallbackQuery({ text: `Режим: ${newMode}` });
   await renderDashboard(ctx);
 });

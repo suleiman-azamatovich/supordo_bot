@@ -169,8 +169,8 @@ extensionsHandlers.callbackQuery(/^admin:extend:(\d+)$/, async (ctx) => {
   });
 
   const tariffs = await prisma.tariff.findMany({
-    where: { spotId: rental.spotId },
-    orderBy: { durationMinutes: "asc" },
+    where: { spotId: rental.spotId, isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { durationMinutes: "asc" }],
   });
 
   const client = escapeHtml(rental.clientName ?? rental.user.name);

@@ -15,7 +15,7 @@ enum Role {
 
 enum BoardStatus {
   AVAILABLE
-  BOOKED
+  BOOKED // Зарезервировано для будущего функционала бронирования
   RENTED
   SERVICE
 }
@@ -51,6 +51,25 @@ enum PaymentProofKind {
   OVERDUE
 }
 
+enum AuditAction {
+  CREATED
+  WALKIN_CREATED
+  WAIT_PAYMENT
+  SUBMITTED
+  APPROVED_AND_RENTED
+  RETURNED
+  CANCELLED
+  EXTENDED
+  EXTEND_REQUESTED
+  EXTEND_REJECTED
+  CLOSE_OVERDUE
+  PAYMENT_APPROVED
+  PAYMENT_REJECTED
+  ROLE_CHANGED
+  MODE_TOGGLED
+  QR_UPDATED
+}
+
 model User {
   id        Int      @id @default(autoincrement())
   tgId      BigInt   @unique
@@ -59,33 +78,38 @@ model User {
   phone     String?
   spotId    Int?
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  spot          Spot?          @relation(fields: [spotId], references: [id])
-  bookings      Booking[]
-  rentals       Rental[]       @relation("RentalClient")
-  sellerRentals Rental[]       @relation("RentalSeller")
-  paymentProofs PaymentProof[] @relation("PaymentCreator")
+  spot           Spot?          @relation(fields: [spotId], references: [id])
+  bookings       Booking[]
+  rentals        Rental[]       @relation("RentalClient")
+  sellerRentals  Rental[]       @relation("RentalSeller")
+  paymentProofs  PaymentProof[] @relation("PaymentCreator")
   reviewedProofs PaymentProof[] @relation("PaymentReviewer")
-  auditLogs     AuditLog[]
-  notifications Notification[]
+  auditLogs      AuditLog[]
+  notifications  Notification[]
 }
 
 model Spot {
-  id     Int    @id @default(autoincrement())
-  name   String
-  boards  Board[]
-  tariffs Tariff[]
-  sellers User[]
+  id       Int     @id @default(autoincrement())
+  name     String
+  address  String?
+  isActive Boolean @default(true)
+
+  boards   Board[]
+  tariffs  Tariff[]
+  sellers  User[]
   bookings Booking[]
   rentals  Rental[]
 }
 
 model Board {
-  id     Int         @id @default(autoincrement())
-  spotId Int
-  code   String      @unique
-  title  String
-  status BoardStatus @default(AVAILABLE)
+  id          Int         @id @default(autoincrement())
+  spotId      Int
+  code        String      @unique
+  title       String
+  imageFileId String?
+  status      BoardStatus @default(AVAILABLE)
 
   spot     Spot      @relation(fields: [spotId], references: [id])
   bookings Booking[]
@@ -96,26 +120,30 @@ model Board {
 }
 
 model Tariff {
-  id              Int    @id @default(autoincrement())
+  id              Int     @id @default(autoincrement())
   spotId          Int
   name            String
   durationMinutes Int
   price           Int
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
 
   spot    Spot     @relation(fields: [spotId], references: [id])
   rentals Rental[]
+
+  @@index([spotId, isActive])
 }
 
 model Booking {
-  id      Int           @id @default(autoincrement())
-  userId  Int
-  spotId  Int
-  boardId Int?
-  tariffId Int?
-  startAt DateTime
-  endAt   DateTime
-  status  BookingStatus @default(DRAFT)
-  createdAt DateTime    @default(now())
+  id        Int           @id @default(autoincrement())
+  userId    Int
+  spotId    Int
+  boardId   Int?
+  tariffId  Int?
+  startAt   DateTime
+  endAt     DateTime
+  status    BookingStatus @default(DRAFT)
+  createdAt DateTime      @default(now())
 
   user  User   @relation(fields: [userId], references: [id])
   spot  Spot   @relation(fields: [spotId], references: [id])
@@ -123,30 +151,33 @@ model Booking {
 }
 
 model Rental {
-  id           Int          @id @default(autoincrement())
-  userId       Int
-  spotId       Int
-  boardId      Int
-  tariffId     Int?
-  sellerUserId Int?
-  clientName    String?
-  startAt       DateTime?
-  endAt         DateTime?
-  extraMinutes  Int          @default(0)
-  extraCost     Int          @default(0)
+  id                  Int          @id @default(autoincrement())
+  userId              Int
+  spotId              Int
+  boardId             Int
+  tariffId            Int?
+  sellerUserId        Int?
+  clientName          String?
+  startAt             DateTime?
+  endAt               DateTime?
+  extraMinutes        Int          @default(0)
+  extraCost           Int          @default(0)
   pendingExtraMinutes Int?
-  status        RentalStatus @default(CREATED)
-  createdAt     DateTime     @default(now())
+  status              RentalStatus @default(CREATED)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 
-  user   User   @relation("RentalClient", fields: [userId], references: [id])
-  seller User?  @relation("RentalSeller", fields: [sellerUserId], references: [id])
-  spot   Spot   @relation(fields: [spotId], references: [id])
-  board  Board  @relation(fields: [boardId], references: [id])
+  user   User    @relation("RentalClient", fields: [userId], references: [id])
+  seller User?   @relation("RentalSeller", fields: [sellerUserId], references: [id])
+  spot   Spot    @relation(fields: [spotId], references: [id])
+  board  Board   @relation(fields: [boardId], references: [id])
   tariff Tariff? @relation(fields: [tariffId], references: [id])
 
   @@index([status])
   @@index([spotId])
   @@index([boardId])
+  @@index([userId])
+  @@index([startAt])
 }
 
 model PaymentProof {
@@ -160,6 +191,7 @@ model PaymentProof {
   createdAt  DateTime           @default(now())
   userId     Int
   reviewedBy Int?
+  reviewedAt DateTime?
 
   user     User  @relation("PaymentCreator", fields: [userId], references: [id])
   reviewer User? @relation("PaymentReviewer", fields: [reviewedBy], references: [id])
@@ -169,22 +201,28 @@ model PaymentProof {
 }
 
 model AuditLog {
-  id           Int      @id @default(autoincrement())
-  actorUserId  Int
-  entityType   String
-  entityId     Int
-  action       String
-  metaJson     Json?
-  createdAt    DateTime @default(now())
+  id          Int         @id @default(autoincrement())
+  actorUserId Int
+  entityType  String
+  entityId    Int
+  action      AuditAction
+  metaJson    Json?
+  createdAt   DateTime    @default(now())
 
   actor User @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
 }
 
 model Notification {
   id        Int      @id @default(autoincrement())
   userId    Int
   text      String
+  isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
 }

@@ -17,6 +17,7 @@
 
 import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
+import { Role } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { handleRentalByQR } from "./helpers";
 
@@ -31,7 +32,7 @@ chatHandlers.callbackQuery(/^client:chat_admin:(\d+)$/, async (ctx) => {
     where: { id: proofId },
   });
 
-  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
   if (admins.length === 0) {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
@@ -56,7 +57,7 @@ chatHandlers.callbackQuery(/^client:chat_ext:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
-  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
   if (admins.length === 0) {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
@@ -103,7 +104,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
     const proofId = ctx.session.chatReplyProofId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
       for (const admin of admins) {
         try {
           await ctx.api.sendMessage(
@@ -135,7 +136,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
     const rentalId = ctx.session.chatReplyRentalId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
       await Promise.all(admins.map((admin) =>
         ctx.api.sendMessage(
           Number(admin.tgId),
@@ -148,7 +149,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
               .row()
               .text("💬 Ответить", `ext:chat:${rentalId}`),
           }
-        ).catch(() => { })
+        ).catch((e) => console.error('[chat] Ошибка пересылки сообщения админу:', e))
       ));
       await ctx.reply("✅ Сообщение отправлено администратору.", {
         reply_markup: new InlineKeyboard()

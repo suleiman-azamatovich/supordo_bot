@@ -11,7 +11,7 @@ import path from "path";
 import { InlineKeyboard, InputFile } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
-import { BoardStatus } from "@prisma/client";
+import { BoardStatus, Role } from "@prisma/client";
 import { fmtPrice, fmtDuration } from "../../ui/helpers";
 
 /** Путь к файлу QR-кода MBank на диске */
@@ -48,8 +48,8 @@ export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
   }
 
   const tariffs = await prisma.tariff.findMany({
-    where: { spotId: board.spotId },
-    orderBy: { durationMinutes: "asc" },
+    where: { spotId: board.spotId, isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { durationMinutes: "asc" }],
   });
 
   if (tariffs.length === 0) {
@@ -121,7 +121,7 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     .row()
     .text("💬 Запросить инфо", `pay:request_info:${proof.id}`);
 
-  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
   await Promise.all(admins.map(async (admin) => {
     await prisma.notification.create({
       data: {

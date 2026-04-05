@@ -12,6 +12,7 @@
  */
 
 import { Composer, InlineKeyboard } from "grammy";
+import { Role } from "@prisma/client";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { fmtPrice, fmtDuration, fmtDate, paginate, addPaginationRow } from "../../ui/helpers";
@@ -185,8 +186,8 @@ myRentalsHandlers.callbackQuery(/^client:extend:(\d+)$/, async (ctx) => {
   }
 
   const tariffs = await prisma.tariff.findMany({
-    where: { spotId: rental.spotId },
-    orderBy: { durationMinutes: "asc" },
+    where: { spotId: rental.spotId, isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { durationMinutes: "asc" }],
   });
 
   let text = `⏱ <b>Продлить аренду</b>\n\n`;
@@ -249,7 +250,7 @@ myRentalsHandlers.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ct
     );
 
     // Уведомляем всех админов
-    const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+    const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
     await Promise.all(admins.map(async (admin) => {
       await prisma.notification.create({
         data: {

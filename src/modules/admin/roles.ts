@@ -16,7 +16,7 @@ import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { invalidateUserCache } from "../../bot/middleware";
 import * as audit from "../../services/audit";
-import { Role } from "@prisma/client";
+import { Role, AuditAction } from "@prisma/client";
 import { config } from "../../bot/config";
 
 export const rolesHandlers = new Composer<BotContext>();
@@ -55,7 +55,7 @@ rolesHandlers.command("add_admin", async (ctx) => {
     create: { tgId, name: `Admin ${tgId}`, role: Role.ADMIN, spotId },
   });
 
-  await audit.log(ctx.dbUser.id, "User", user.id, "PROMOTED_TO_ADMIN", { tgId: tgId.toString() });
+  await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "promote" });
   invalidateUserCache(tgId);
   await ctx.reply(`✅ Пользователь tg:${user.tgId} назначен администратором.`);
 });
@@ -92,7 +92,7 @@ rolesHandlers.command("remove_admin", async (ctx) => {
   });
   invalidateUserCache(tgId);
 
-  await audit.log(ctx.dbUser.id, "User", user.id, "DEMOTED_FROM_ADMIN", { tgId: tgId.toString() });
+  await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "demote" });
   await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли администратора.`);
 });
 

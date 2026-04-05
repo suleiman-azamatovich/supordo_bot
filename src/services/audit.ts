@@ -7,6 +7,7 @@
  * @module
  */
 import { prisma } from "../db/prisma";
+import { AuditAction } from "@prisma/client";
 
 /**
  * Записать событие в журнал аудита.
@@ -14,14 +15,14 @@ import { prisma } from "../db/prisma";
  * @param actorUserId - ID пользователя, выполнившего действие
  * @param entityType - Тип сущности (напр.: 'Rental', 'PaymentProof', 'Board')
  * @param entityId - ID сущности
- * @param action - Действие (напр.: 'CREATED', 'APPROVED', 'CANCELLED')
+ * @param action - Действие из enum AuditAction
  * @param meta - Дополнительные данные (сохраняются как JSON)
  */
 export async function log(
   actorUserId: number,
   entityType: string,
   entityId: number,
-  action: string,
+  action: AuditAction,
   meta?: Record<string, unknown>
 ) {
   await prisma.auditLog.create({
