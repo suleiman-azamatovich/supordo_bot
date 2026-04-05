@@ -1,11 +1,21 @@
+/**
+ * Точка входа Subordo Bot.
+ *
+ * Собирает middleware-цепочку, регистрирует модули
+ * и запускает бот через @grammyjs/runner в concurrent-режиме.
+ *
+ * Порядок middleware:
+ * sequentialize → session → authMiddleware → chatCleanup → clientModule → adminModule
+ *
+ * @module
+ */
 import { Bot, session } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
 import { BotContext, SessionData } from "./bot/context";
 import { config } from "./bot/config";
 import { authMiddleware, chatCleanupMiddleware } from "./bot/middleware";
-import { clientModule } from "./modules/client";
-import { sellerModule } from "./modules/seller";
-import { adminModule } from "./modules/admin";
+import { clientModule } from "./modules/client/index";
+import { adminModule } from "./modules/admin/index";
 import { startExpiryChecker } from "./services/expiry";
 import { prisma } from "./db/prisma";
 
@@ -35,7 +45,6 @@ async function main() {
 
   // Register modules
   bot.use(clientModule);
-  bot.use(sellerModule);
   bot.use(adminModule);
 
   // Set bot commands

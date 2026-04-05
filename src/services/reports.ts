@@ -1,10 +1,20 @@
+/**
+ * Сервис отчётов — генерация статистики по арендам.
+ *
+ * Отчёты: сегодня, неделя (по дням), выручка по тарифам.
+ * Все даты в часовом поясе Asia/Bishkek.
+ *
+ * @module
+ */
 import { prisma } from "../db/prisma";
 import { RentalStatus } from "@prisma/client";
-import { fmtPrice, fmtDuration } from "../ui/helpers";
+import { fmtPrice, fmtDuration, escapeHtml, truncateMessage } from "../ui/helpers";
 
-/** Bishkek start-of-day */
-function startOfDayBishkek(date: Date = new Date()): Date {
-  const s = date.toLocaleDateString("en-CA", { timeZone: "Asia/Bishkek" }); // YYYY-MM-DD
+import { config } from "../bot/config";
+
+/** Начало дня по часовому поясу Бишкека (UTC+6) */
+export function startOfDayBishkek(date: Date = new Date()): Date {
+  const s = date.toLocaleDateString("en-CA", { timeZone: config.TIMEZONE }); // YYYY-MM-DD
   return new Date(`${s}T00:00:00+06:00`);
 }
 
@@ -15,15 +25,16 @@ function daysAgo(days: number): Date {
 }
 
 function shortWeekday(d: Date): string {
-  return d.toLocaleDateString("ru-RU", { timeZone: "Asia/Bishkek", weekday: "short" });
+  return d.toLocaleDateString("ru-RU", { timeZone: config.TIMEZONE, weekday: "short" });
 }
 
 function shortDate(d: Date): string {
-  return d.toLocaleDateString("ru-RU", { timeZone: "Asia/Bishkek", day: "2-digit", month: "2-digit" });
+  return d.toLocaleDateString("ru-RU", { timeZone: config.TIMEZONE, day: "2-digit", month: "2-digit" });
 }
 
 // ——— Today report ———
 
+/** Отчёт за сегодня: выручка, число аренд, средний чек, отмены */
 export async function todayReport() {
   const since = startOfDayBishkek();
 
@@ -44,6 +55,7 @@ export async function todayReport() {
   return { revenue, count, cancelled, avg, rentals };
 }
 
+/** Форматирование отчёта за сегодня в Telegram HTML */
 export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>): string {
   let text = `📊 <b>Сегодня</b>\n\n`;
   text += `💰 Выручка: <b>${fmtPrice(data.revenue)}</b>\n`;
@@ -55,7 +67,7 @@ export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>)
     text += `<b>Список аренд:</b>\n`;
     for (const r of data.rentals) {
       if (r.status === RentalStatus.CANCELLED) continue;
-      const client = r.clientName ?? r.user.name;
+      const client = escapeHtml(r.clientName ?? r.user.name);
       const source = r.sellerUserId ? "👤 админ" : "📱 клиент";
       const tariffInfo = r.tariff ? `${fmtDuration(r.tariff.durationMinutes)}` : "";
       const price = r.tariff ? fmtPrice(r.tariff.price) : "—";
@@ -97,11 +109,12 @@ export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>)
     }
   }
 
-  return text;
+  return truncateMessage(text);
 }
 
 // ——— Week report (by day) ———
 
+/** Отчёт за неделю с разбивкой по дням (последние 7 дней) */
 export async function weekReport() {
   const since = daysAgo(7);
 
@@ -118,12 +131,12 @@ export async function weekReport() {
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const key = d.toLocaleDateString("en-CA", { timeZone: "Asia/Bishkek" });
+    const key = d.toLocaleDateString("en-CA", { timeZone: config.TIMEZONE });
     dayMap.set(key, { revenue: 0, count: 0 });
   }
 
   for (const r of rentals) {
-    const key = r.createdAt.toLocaleDateString("en-CA", { timeZone: "Asia/Bishkek" });
+    const key = r.createdAt.toLocaleDateString("en-CA", { timeZone: config.TIMEZONE });
     const entry = dayMap.get(key);
     if (entry) {
       entry.count++;
@@ -142,6 +155,7 @@ export async function weekReport() {
   return { rows, totalRevenue, totalCount };
 }
 
+/** Форматирование недельного отчёта в Telegram HTML с ASCII-гистограммой */
 export function formatWeekReport(data: Awaited<ReturnType<typeof weekReport>>): string {
   let text = `📈 <b>Неделя</b>\n\n`;
 
@@ -154,11 +168,15 @@ export function formatWeekReport(data: Awaited<ReturnType<typeof weekReport>>): 
   }
 
   text += `\n💰 <b>Итого:</b> ${fmtPrice(data.totalRevenue)} (${data.totalCount} аренд)`;
-  return text;
+  return truncateMessage(text);
 }
 
 // ——— Revenue by tariff ———
 
+/**
+ * Отчёт по выручке в разрезе тарифов.
+ * @param days - Количество дней для анализа (по умолчанию 7)
+ */
 export async function tariffReport(days: number = 7) {
   const since = daysAgo(days);
 
@@ -186,6 +204,7 @@ export async function tariffReport(days: number = 7) {
   return { rows, totalRevenue, totalCount };
 }
 
+/** Форматирование отчёта по тарифам в Telegram HTML с процентами */
 export function formatTariffReport(data: Awaited<ReturnType<typeof tariffReport>>): string {
   let text = `💵 <b>Выручка по тарифам (7 дней)</b>\n\n`;
   if (data.rows.length === 0) {
@@ -200,5 +219,5 @@ export function formatTariffReport(data: Awaited<ReturnType<typeof tariffReport>
   }
 
   text += `💰 <b>Итого:</b> ${fmtPrice(data.totalRevenue)} (${data.totalCount} аренд)`;
-  return text;
+  return truncateMessage(text);
 }

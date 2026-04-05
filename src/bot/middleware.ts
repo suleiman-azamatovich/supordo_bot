@@ -72,6 +72,24 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
   const chatId = ctx.chat?.id;
   if (!chatId) return next();
 
+  // Auto-clear chat mode when navigating away from chat-related actions
+  if (ctx.callbackQuery?.data) {
+    const chatActions = ['client:chat_admin:', 'client:chat_ext:', 'client:end_chat',
+      'admin:chat_client:', 'admin:end_chat', 'ext:chat:', 'pay:request_info:'];
+    const isChatAction = chatActions.some((a) => ctx.callbackQuery!.data!.startsWith(a));
+    if (!isChatAction) {
+      // Clear admin chat state
+      ctx.session.chatMode = undefined;
+      ctx.session.chatWithClientTgId = undefined;
+      ctx.session.chatProofId = undefined;
+      ctx.session.chatRentalId = undefined;
+      // Clear client chat state
+      ctx.session.chatWithAdminTgId = undefined;
+      ctx.session.chatReplyProofId = undefined;
+      ctx.session.chatReplyRentalId = undefined;
+    }
+  }
+
   if (ctx.message) {
     // New message from user — clear everything (fire-and-forget)
     const ids = ctx.session.lastBotMsgIds ?? [];

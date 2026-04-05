@@ -1,5 +1,6 @@
 import { Api, InputFile } from "grammy";
 import path from "path";
+import fs from "fs";
 import { prisma } from "../db/prisma";
 import { fmtPrice } from "../ui/helpers";
 
@@ -56,12 +57,17 @@ export async function sendMBankQRToChat(
   chatId: number | bigint,
   amount: number
 ) {
+  const caption =
+    `💳 <b>Оплата через MBank</b>\n\n` +
+    `Отсканируйте QR-код в приложении MBank и переведите <b>${fmtPrice(amount)}</b>.\n` +
+    `После перевода администратор подтвердит оплату.`;
   try {
+    if (!fs.existsSync(MBANK_QR_PATH)) {
+      await api.sendMessage(Number(chatId), caption, { parse_mode: "HTML" });
+      return;
+    }
     await api.sendPhoto(Number(chatId), new InputFile(MBANK_QR_PATH), {
-      caption:
-        `💳 <b>Оплата через MBank</b>\n\n` +
-        `Отсканируйте QR-код в приложении MBank и переведите <b>${fmtPrice(amount)}</b>.\n` +
-        `После перевода администратор подтвердит оплату.`,
+      caption,
       parse_mode: "HTML",
     });
   } catch (e) {

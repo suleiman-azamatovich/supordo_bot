@@ -15,6 +15,12 @@ export interface SessionData {
   waitingBoardCode?: boolean;
   /** admin waiting to send MBank QR photo */
   waitingMBankQR?: boolean;
+  /**
+   * Chat mode discriminator to avoid state ambiguity.
+   * 'payment' = admin↔client chat about a payment proof
+   * 'extension' = admin↔client chat about a rental extension
+   */
+  chatMode?: 'payment' | 'extension';
   /** admin↔client chat: admin writing to a client about a proof */
   chatWithClientTgId?: number;
   chatProofId?: number;

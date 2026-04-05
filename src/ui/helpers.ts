@@ -1,4 +1,5 @@
 import { InlineKeyboard } from "grammy";
+import { config } from "../bot/config";
 
 export const PAGE_SIZE = 5;
 
@@ -55,6 +56,21 @@ export function fmtPrice(amount: number): string {
   return `${amount} сом`;
 }
 
+/** Escape HTML special characters to prevent injection in Telegram HTML messages */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Truncate message to stay within Telegram's 4096 character limit */
+export function truncateMessage(text: string, limit = 4000): string {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit) + "\n\n… <i>сообщение обрезано</i>";
+}
+
 /** Format duration */
 export function fmtDuration(minutes: number): string {
   if (minutes < 60) return `${minutes} мин`;
@@ -66,7 +82,7 @@ export function fmtDuration(minutes: number): string {
 /** Format date (Bishkek timezone) */
 export function fmtDate(d: Date): string {
   return d.toLocaleString("ru-RU", {
-    timeZone: "Asia/Bishkek",
+    timeZone: config.TIMEZONE,
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -75,11 +91,3 @@ export function fmtDate(d: Date): string {
   });
 }
 
-/** Short date for reports */
-export function fmtShortDate(d: Date): string {
-  return d.toLocaleDateString("ru-RU", {
-    timeZone: "Asia/Bishkek",
-    day: "2-digit",
-    month: "2-digit",
-  });
-}

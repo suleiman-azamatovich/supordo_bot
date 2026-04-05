@@ -1,6 +1,13 @@
 import { InlineKeyboard } from "grammy";
 import { Role } from "@prisma/client";
 
+/**
+ * Главное меню бота.
+ *
+ * Кнопки зависят от роли пользователя:
+ * - CLIENT: доски, мои аренды, уведомления, помощь
+ * - ADMIN: уведомления, доски, панель управления, выдача доски, отчёты
+ */
 export function mainMenuKeyboard(role: Role): InlineKeyboard {
   const kb = new InlineKeyboard();
 
@@ -8,14 +15,6 @@ export function mainMenuKeyboard(role: Role): InlineKeyboard {
     kb.text("🏄 Доски", "client:boards").row();
     kb.text("📋 Мои аренды", "client:my_list").text("🔔 Уведомления", "client:notifications").row();
     kb.text("❓ Помощь", "client:help").row();
-  }
-
-  if (role === Role.SELLER) {
-    kb.text("➕ Оформить аренду", "seller:walkin").row();
-
-    kb.text("🏄 В аренде", "seller:rented").row();
-    kb.text("🔄 Возвраты", "seller:returns").row();
-    kb.text("📊 История за день", "seller:today").row();
   }
 
   if (role === Role.ADMIN) {

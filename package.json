@@ -24,7 +24,7 @@
     "grammy": "^1.35.0"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^22.19.17",
     "prisma": "^6.5.0",
     "qrcode": "^1.5.4",
     "tsx": "^4.19.3",

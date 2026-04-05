@@ -1,9 +1,21 @@
+/**
+ * Сервис оплаты — обработка чеков оплаты (PaymentProof).
+ *
+ * Поддерживает два типа: RENTAL (оплата аренды) и OVERDUE (оплата просрочки).
+ * При одобрении автоматически вызывает соответствующую операцию аренды.
+ *
+ * @module
+ */
 import { PaymentProofStatus, PaymentProofKind } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import * as rentalService from "./rental";
-import * as bookingService from "./booking";
 
+/**
+ * Получить список необработанных чеков оплаты (статус SUBMITTED).
+ * @param page - Номер страницы (1-based)
+ * @param pageSize - Количество элементов на странице
+ */
 export async function getPendingPayments(page: number, pageSize: number) {
   const total = await prisma.paymentProof.count({
     where: { status: PaymentProofStatus.SUBMITTED },
@@ -18,7 +30,20 @@ export async function getPendingPayments(page: number, pageSize: number) {
   return { items, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
+/**
+ * Одобрить чек оплаты.
+ *
+ * Для RENTAL-чеков вызывает `approveRental()` (аренда → RENTED).
+ * Для OVERDUE-чеков вызывает `closeOverdue()` (закрытие просрочки).
+ *
+ * @throws Если чек уже обработан
+ */
 export async function approvePayment(proofId: number, adminUserId: number) {
+  const existing = await prisma.paymentProof.findUniqueOrThrow({ where: { id: proofId } });
+  if (existing.status !== PaymentProofStatus.SUBMITTED) {
+    throw new Error("Эта оплата уже обработана");
+  }
+
   const proof = await prisma.paymentProof.update({
     where: { id: proofId },
     data: { status: PaymentProofStatus.APPROVED, reviewedBy: adminUserId },
@@ -28,8 +53,6 @@ export async function approvePayment(proofId: number, adminUserId: number) {
 
   if (proof.kind === PaymentProofKind.RENTAL) {
     await rentalService.approveRental(proof.refId, adminUserId);
-  } else if (proof.kind === PaymentProofKind.BOOKING) {
-    await bookingService.approveBooking(proof.refId, adminUserId);
   } else if (proof.kind === PaymentProofKind.OVERDUE) {
     // If rental is still active (WAIT_RETURN), close the overdue
     const rental = await prisma.rental.findUnique({ where: { id: proof.refId } });
@@ -41,7 +64,20 @@ export async function approvePayment(proofId: number, adminUserId: number) {
   return proof;
 }
 
+/**
+ * Отклонить чек оплаты.
+ *
+ * Для RENTAL-чеков: возвращает аренду в WAIT_PAYMENT для повторной оплаты.
+ * Для OVERDUE-чеков: отказ = списание долга (без изменения статуса).
+ *
+ * @throws Если чек уже обработан
+ */
 export async function rejectPayment(proofId: number, adminUserId: number) {
+  const existing = await prisma.paymentProof.findUniqueOrThrow({ where: { id: proofId } });
+  if (existing.status !== PaymentProofStatus.SUBMITTED) {
+    throw new Error("Эта оплата уже обработана");
+  }
+
   const proof = await prisma.paymentProof.update({
     where: { id: proofId },
     data: { status: PaymentProofStatus.REJECTED, reviewedBy: adminUserId },
@@ -49,14 +85,8 @@ export async function rejectPayment(proofId: number, adminUserId: number) {
 
   await audit.log(adminUserId, "PaymentProof", proofId, "REJECTED");
 
-  // Move booking/rental back to WAIT_PAYMENT so the client can retry
   if (proof.kind === PaymentProofKind.RENTAL) {
     await prisma.rental.update({
-      where: { id: proof.refId },
-      data: { status: "WAIT_PAYMENT" },
-    });
-  } else if (proof.kind === PaymentProofKind.BOOKING) {
-    await prisma.booking.update({
       where: { id: proof.refId },
       data: { status: "WAIT_PAYMENT" },
     });

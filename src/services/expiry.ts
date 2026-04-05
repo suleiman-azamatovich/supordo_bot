@@ -1,26 +1,48 @@
+/**
+ * Фоновый чекер истечения аренд.
+ *
+ * Запускается каждые 30 секунд и выполняет 4 проверки:
+ * 1. Отмена неоплаченных аренд (CREATED/WAIT_PAYMENT старше таймаута)
+ * 2. Предупреждение при ≤ 10% оставшегося времени (однократно)
+ * 3. Уведомление об истечении времени + начало грейс-периода
+ * 4. Перевод в WAIT_RETURN после грейса (начисление просрочки)
+ *
+ * @module
+ */
 import { RentalStatus, BoardStatus } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
-import { notify } from "./notify";
-import { END_GRACE_MINUTES, OVERDUE_RATE_PER_MIN } from "./rental";
+import { notify, clearOldNotifications } from "./notify";
+import { OVERDUE_RATE_PER_MIN, getEndGraceMs, getUnpaidTimeoutMs } from "./rental";
+import { escapeHtml } from "../ui/helpers";
 
 // Множество ID аренд, для которых уже отправлено предупреждение «скоро конец»
 const warnedRentals = new Set<number>();
 // Множество ID аренд, для которых уже отправлено уведомление «время истекло»
 const expiredNotifiedRentals = new Set<number>();
 
-/** Timeout for unpaid rentals (15 minutes) */
-const UNPAID_TIMEOUT_MS = 15 * 60_000;
-
+/**
+ * Запустить фоновый чекер истечения аренд.
+ *
+ * Выполняет первый tick() сразу, затем повторяет каждые 30 секунд.
+ * Вызывать один раз при старте бота.
+ *
+ * @param api - Экземпляр Telegram API для отправки уведомлений
+ */
 export function startExpiryChecker(api: Api) {
   const INTERVAL_MS = 30_000; // 30 секунд
 
   async function tick() {
     try {
       const now = new Date();
+      const END_GRACE_MS = await getEndGraceMs();
+      const UNPAID_TIMEOUT_MS = await getUnpaidTimeoutMs();
+      const graceLabel = END_GRACE_MS >= 60_000
+        ? `${Math.round(END_GRACE_MS / 60_000)} мин`
+        : `${Math.round(END_GRACE_MS / 1_000)} сек`;
 
       // --- Cancel unpaid rentals that have been stuck for too long ---
-      await cancelStaleRentals(api, now);
+      await cancelStaleRentals(api, now, UNPAID_TIMEOUT_MS);
 
       const activeRentals = await prisma.rental.findMany({
         where: {
@@ -81,7 +103,7 @@ export function startExpiryChecker(api: Api) {
             api,
             rental.spotId,
             `⚠️ Доска ${rental.board.code} — время почти истекло (${remainMin} мин)\n` +
-            `Клиент: ${rental.clientName ?? "Telegram-клиент"}`
+            `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}`
           );
         }
 
@@ -91,7 +113,7 @@ export function startExpiryChecker(api: Api) {
           warnedRentals.delete(rental.id);
 
           console.log(
-            `[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) — время истекло, грейс ${END_GRACE_MINUTES} мин`
+            `[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) — время истекло, грейс ${graceLabel}`
           );
 
           try {
@@ -99,7 +121,7 @@ export function startExpiryChecker(api: Api) {
               api,
               chatId,
               `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-              `У вас есть ${END_GRACE_MINUTES} минут чтобы вернуть доску. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
+              `У вас есть ${graceLabel} чтобы вернуть доску. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
             );
           } catch (e) {
             console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
@@ -110,13 +132,13 @@ export function startExpiryChecker(api: Api) {
             rental.spotId,
             `⏰ Время аренды #${rental.id} истекло!\n` +
             `Доска: ${rental.board.code}\n` +
-            `Клиент: ${rental.clientName ?? "Telegram-клиент"}\n` +
-            `Грейс: ${END_GRACE_MINUTES} мин до начала просрочки.`
+            `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
+            `Грейс: ${graceLabel} до начала просрочки.`
           );
         }
 
         // --- Грейс истёк — переводим в WAIT_RETURN ---
-        const graceEnd = new Date(expiresAt.getTime() + END_GRACE_MINUTES * 60_000);
+        const graceEnd = new Date(expiresAt.getTime() + END_GRACE_MS);
         if (now >= graceEnd) {
           await prisma.rental.update({
             where: { id: rental.id },
@@ -145,11 +167,13 @@ export function startExpiryChecker(api: Api) {
             rental.spotId,
             `⚠️ Просрочка по аренде #${rental.id}!\n` +
             `Доска: ${rental.board.code}\n` +
-            `Клиент: ${rental.clientName ?? "Telegram-клиент"}\n` +
+            `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
             `Начисляется ${OVERDUE_RATE_PER_MIN} сом/мин. Подтвердите возврат в разделе «Возвраты».`
           );
         }
       }
+      // Clean up old notifications periodically
+      await clearOldNotifications();
     } catch (err) {
       console.error("[expiry] Ошибка:", err);
     }
@@ -160,10 +184,14 @@ export function startExpiryChecker(api: Api) {
   console.log("⏰ Expiry checker started (every 30s)");
 }
 
+/**
+ * Уведомить всех админов точки проката.
+ * @param spotId - ID точки (Spot)
+ */
 async function notifySellers(api: Api, spotId: number, text: string) {
   try {
     const sellers = await prisma.user.findMany({
-      where: { role: { in: ["SELLER", "ADMIN"] }, spotId },
+      where: { role: "ADMIN", spotId },
     });
     await Promise.all(sellers.map((s) => notify(api, s.tgId, text).catch(() => { })));
   } catch (e) {
@@ -171,8 +199,8 @@ async function notifySellers(api: Api, spotId: number, text: string) {
   }
 }
 
-/** Cancel rentals stuck in CREATED/WAIT_PAYMENT for longer than UNPAID_TIMEOUT_MS */
-async function cancelStaleRentals(api: Api, now: Date) {
+/** Cancel rentals stuck in CREATED/WAIT_PAYMENT for longer than timeout */
+async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number) {
   const cutoff = new Date(now.getTime() - UNPAID_TIMEOUT_MS);
 
   const staleRentals = await prisma.rental.findMany({
