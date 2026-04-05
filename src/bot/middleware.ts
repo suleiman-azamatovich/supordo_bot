@@ -2,6 +2,7 @@ import { Role } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { BotContext } from "./context";
 import { NextFunction } from "grammy";
+import { config } from "./config";
 
 /** In-memory user cache: tgId → user data. Avoids DB hit on every update. */
 const userCache = new Map<bigint, {
@@ -36,6 +37,12 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
       });
 
     if (!user) return;
+
+    // Авто-повышение до CASHIER если tgId указан в CASHIER_TG_IDS
+    if (user.role === Role.CLIENT && config.CASHIER_TG_IDS.includes(tgId.toString())) {
+      await prisma.user.update({ where: { tgId }, data: { role: Role.CASHIER } });
+      user.role = Role.CASHIER;
+    }
 
     cached = {
       id: user.id, tgId: user.tgId, role: user.role,
@@ -75,7 +82,7 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
   // Auto-clear chat mode when navigating away from chat-related actions
   if (ctx.callbackQuery?.data) {
     const chatActions = ['client:chat_admin:', 'client:chat_ext:', 'client:end_chat',
-      'admin:chat_client:', 'admin:end_chat', 'ext:chat:', 'pay:request_info:'];
+      'admin:chat_client:', 'admin:end_chat', 'ext:chat:'];
     const isChatAction = chatActions.some((a) => ctx.callbackQuery!.data!.startsWith(a));
     if (!isChatAction) {
       // Clear admin chat state
@@ -94,17 +101,17 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
     // New message from user — clear everything (fire-and-forget)
     const ids = ctx.session.lastBotMsgIds ?? [];
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e))));
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [];
     // Delete user's message (fire-and-forget)
-    ctx.api.deleteMessage(chatId, ctx.message.message_id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e));
+    ctx.api.deleteMessage(chatId, ctx.message.message_id).catch(() => { });
   } else if (ctx.callbackQuery?.message) {
     // Callback — keep the source message, delete extras (fire-and-forget)
     const sourceId = ctx.callbackQuery.message.message_id;
     const ids = (ctx.session.lastBotMsgIds ?? []).filter((id) => id !== sourceId);
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch((e) => console.error('[cleanup] Ошибка удаления сообщения:', e))));
+      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [sourceId];
   }

@@ -30,7 +30,7 @@ chatHandlers.callbackQuery("admin:end_chat", async (ctx) => {
   ctx.session.chatRentalId = undefined;
   await ctx.editMessageText("🛑 Режим переписки завершён.", {
     reply_markup: new InlineKeyboard()
-      .text("💳 К оплатам", "admin:payments")
+      .text("✅ Проверка оплат", "cashier:payments")
       .text("⬅️ Меню", "back:menu"),
   });
 });

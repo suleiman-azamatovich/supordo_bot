@@ -114,6 +114,77 @@ rolesHandlers.command("set_mbank_qr", async (ctx) => {
   );
 });
 
+/**
+ * /add_cashier <TG_ID> [SPOT_ID] — назначает пользователя кассиром.
+ *
+ * Если пользователь не существует в БД, создаёт его.
+ * При указании SPOT_ID привязывает к конкретной точке.
+ */
+rolesHandlers.command("add_cashier", async (ctx) => {
+  if (ctx.dbUser?.role !== Role.ADMIN) {
+    return ctx.reply("⛔ Только для админа.");
+  }
+
+  const args = (ctx.match as string)?.split(" ").filter(Boolean);
+  if (!args || args.length < 1) {
+    return ctx.reply(
+      "Использование: /add_cashier <TG_ID> [SPOT_ID]\n\nПример: /add_cashier 123456789 1"
+    );
+  }
+
+  const tgId = BigInt(args[0]);
+  const spotId = args[1] ? parseInt(args[1]) : ctx.dbUser.spotId;
+
+  if (spotId) {
+    const spot = await prisma.spot.findUnique({ where: { id: spotId } });
+    if (!spot) {
+      return ctx.reply(`❌ Точка #${spotId} не найдена.`);
+    }
+  }
+
+  const user = await prisma.user.upsert({
+    where: { tgId },
+    update: { role: Role.CASHIER, spotId },
+    create: { tgId, name: `Cashier ${tgId}`, role: Role.CASHIER, spotId },
+  });
+
+  await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "promote_cashier" });
+  invalidateUserCache(tgId);
+  await ctx.reply(`✅ Пользователь tg:${user.tgId} назначен кассиром.`);
+});
+
+/**
+ * /remove_cashier <TG_ID> — снимает роль кассира.
+ *
+ * Пользователь переводится в роль CLIENT.
+ */
+rolesHandlers.command("remove_cashier", async (ctx) => {
+  if (ctx.dbUser?.role !== Role.ADMIN) {
+    return ctx.reply("⛔ Только для админа.");
+  }
+
+  const tgIdStr = (ctx.match as string)?.trim();
+  if (!tgIdStr) {
+    return ctx.reply("Использование: /remove_cashier <TG_ID>");
+  }
+
+  const tgId = BigInt(tgIdStr);
+
+  const user = await prisma.user.findUnique({ where: { tgId } });
+  if (!user || user.role !== Role.CASHIER) {
+    return ctx.reply("❌ Кассир не найден.");
+  }
+
+  await prisma.user.update({
+    where: { tgId },
+    data: { role: Role.CLIENT },
+  });
+  invalidateUserCache(tgId);
+
+  await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "demote_cashier" });
+  await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли кассира.`);
+});
+
 /** Получение фото QR-кода MBank */
 rolesHandlers.on("message:photo", async (ctx, next) => {
   if (!ctx.session.waitingMBankQR) return next();

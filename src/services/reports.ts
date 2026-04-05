@@ -1,14 +1,14 @@
 /**
- * Сервис отчётов — генерация статистики по арендам.
+ * Сервис отчётов — генерация дневной сводки по точке.
  *
- * Отчёты: сегодня, неделя (по дням), выручка по тарифам.
+ * Единый отчёт за сегодня: выручка, аренды, доски, оплаты, продления, просрочки.
  * Все даты в часовом поясе Asia/Bishkek.
  *
  * @module
  */
 import { prisma } from "../db/prisma";
-import { RentalStatus } from "@prisma/client";
-import { fmtPrice, fmtDuration, escapeHtml, truncateMessage } from "../ui/helpers";
+import { RentalStatus, BoardStatus, PaymentProofStatus, PaymentProofKind } from "@prisma/client";
+import { fmtPrice, fmtDuration, truncateMessage } from "../ui/helpers";
 
 import { config } from "../bot/config";
 
@@ -18,206 +18,216 @@ export function startOfDayBishkek(date: Date = new Date()): Date {
   return new Date(`${s}T00:00:00+06:00`);
 }
 
-function daysAgo(days: number): Date {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return startOfDayBishkek(d);
-}
+// ——— Дневной отчёт (полная сводка) ———
 
-function shortWeekday(d: Date): string {
-  return d.toLocaleDateString("ru-RU", { timeZone: config.TIMEZONE, weekday: "short" });
-}
-
-function shortDate(d: Date): string {
-  return d.toLocaleDateString("ru-RU", { timeZone: config.TIMEZONE, day: "2-digit", month: "2-digit" });
-}
-
-// ——— Today report ———
-
-/** Отчёт за сегодня: выручка, число аренд, средний чек, отмены */
-export async function todayReport() {
+/** Полная сводка за сегодня */
+export async function dailyReport() {
   const since = startOfDayBishkek();
 
+  // Аренды
   const rentals = await prisma.rental.findMany({
     where: { createdAt: { gte: since } },
-    include: { tariff: true, board: true, user: true, seller: true },
-    orderBy: { createdAt: "desc" },
+    include: { tariff: true, board: true, user: true },
   });
 
-  const completed = rentals.filter((r) =>
-    (r.status === RentalStatus.RETURNED || r.status === RentalStatus.RENTED || r.status === RentalStatus.WAIT_RETURN)
+  const active = rentals.filter((r) =>
+    r.status === RentalStatus.RENTED || r.status === RentalStatus.WAIT_RETURN
   );
-  const revenue = completed.reduce((s, r) => s + (r.tariff?.price ?? 0) + (r.extraCost ?? 0), 0);
-  const count = completed.length;
-  const cancelled = rentals.filter((r) => r.status === RentalStatus.CANCELLED).length;
-  const avg = count > 0 ? Math.round(revenue / count) : 0;
+  const completed = rentals.filter((r) => r.status === RentalStatus.RETURNED);
+  const cancelled = rentals.filter((r) => r.status === RentalStatus.CANCELLED);
+  const pending = rentals.filter((r) =>
+    r.status === RentalStatus.CREATED || r.status === RentalStatus.WAIT_PAYMENT || r.status === RentalStatus.WAIT_ADMIN
+  );
 
-  return { revenue, count, cancelled, avg, rentals };
-}
+  // Выручка = тариф + доплаты (только успешные: RETURNED + RENTED + WAIT_RETURN)
+  const paidRentals = rentals.filter((r) =>
+    r.status === RentalStatus.RETURNED || r.status === RentalStatus.RENTED || r.status === RentalStatus.WAIT_RETURN
+  );
+  const baseTariffRevenue = paidRentals.reduce((s, r) => s + (r.tariff?.price ?? 0), 0);
+  const extraRevenue = paidRentals.reduce((s, r) => s + (r.extraCost ?? 0), 0);
+  const totalRevenue = baseTariffRevenue + extraRevenue;
+  const avgCheck = paidRentals.length > 0 ? Math.round(totalRevenue / paidRentals.length) : 0;
 
-/** Форматирование отчёта за сегодня в Telegram HTML */
-export function formatTodayReport(data: Awaited<ReturnType<typeof todayReport>>): string {
-  let text = `📊 <b>Сегодня</b>\n\n`;
-  text += `💰 Выручка: <b>${fmtPrice(data.revenue)}</b>\n`;
-  text += `🏄 Аренд: <b>${data.count}</b>\n`;
-  text += `💵 Средний чек: <b>${data.avg > 0 ? fmtPrice(data.avg) : "—"}</b>\n`;
-  text += `❌ Отмен: <b>${data.cancelled}</b>\n\n`;
-
-  if (data.rentals.length > 0) {
-    text += `<b>Список аренд:</b>\n`;
-    for (const r of data.rentals) {
-      if (r.status === RentalStatus.CANCELLED) continue;
-      const client = escapeHtml(r.clientName ?? r.user.name);
-      const source = r.sellerUserId ? "👤 админ" : "📱 клиент";
-      const tariffInfo = r.tariff ? `${fmtDuration(r.tariff.durationMinutes)}` : "";
-      const price = r.tariff ? fmtPrice(r.tariff.price) : "—";
-      const extra = r.extraMinutes ?? 0;
-
-      const statusMap: Record<string, string> = {
-        RENTED: "🔴 в аренде",
-        WAIT_RETURN: "⏰ возврат",
-        RETURNED: "✅ завершена",
-        CREATED: "⏳ создана",
-        WAIT_PAYMENT: "💳 ожидает оплаты",
-        WAIT_ADMIN: "🔍 проверка",
-      };
-      const statusText = statusMap[r.status] ?? r.status;
-
-      text += `\n▸ <b>${r.board.code}</b> → ${client}\n`;
-      text += `   ${tariffInfo} · ${price} · ${statusText}\n`;
-      if (extra > 0) {
-        text += `   ⏱ +${fmtDuration(extra)} продления\n`;
-      }
-
-      // Overdue info for returned or active rentals
-      if (r.status === RentalStatus.RETURNED && r.startAt && r.endAt && r.tariff) {
-        const totalPaid = r.tariff.durationMinutes + extra;
-        const actual = Math.ceil((r.endAt.getTime() - r.startAt.getTime()) / 60_000);
-        const overdue = Math.max(0, actual - totalPaid);
-        if (overdue > 0) {
-          text += `   ⚠️ просрочка: ${fmtDuration(overdue)}\n`;
-        }
-      } else if ((r.status === RentalStatus.WAIT_RETURN || r.status === RentalStatus.RENTED) && r.startAt && r.tariff) {
-        const totalPaid = r.tariff.durationMinutes + extra;
-        const actual = Math.ceil((Date.now() - r.startAt.getTime()) / 60_000);
-        const overdue = Math.max(0, actual - totalPaid);
-        if (overdue > 0) {
-          text += `   ⚠️ просрочка: ${fmtDuration(overdue)}\n`;
-        }
-      }
-      text += `   ${source}\n`;
-    }
-  }
-
-  return truncateMessage(text);
-}
-
-// ——— Week report (by day) ———
-
-/** Отчёт за неделю с разбивкой по дням (последние 7 дней) */
-export async function weekReport() {
-  const since = daysAgo(7);
-
-  const rentals = await prisma.rental.findMany({
-    where: {
-      createdAt: { gte: since },
-      status: { in: [RentalStatus.RETURNED, RentalStatus.RENTED, RentalStatus.WAIT_RETURN] },
-    },
-    include: { tariff: true },
+  // Оплаты
+  const payments = await prisma.paymentProof.findMany({
+    where: { createdAt: { gte: since } },
   });
+  const approvedPayments = payments.filter((p) => p.status === PaymentProofStatus.APPROVED);
+  const rejectedPayments = payments.filter((p) => p.status === PaymentProofStatus.REJECTED);
+  const pendingPayments = payments.filter((p) => p.status === PaymentProofStatus.SUBMITTED);
 
-  // Build per-day map
-  const dayMap = new Map<string, { revenue: number; count: number }>();
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = d.toLocaleDateString("en-CA", { timeZone: config.TIMEZONE });
-    dayMap.set(key, { revenue: 0, count: 0 });
-  }
+  // Выручка по видам оплат
+  const rentalPayments = approvedPayments.filter((p) => p.kind === PaymentProofKind.RENTAL);
+  const extensionPayments = approvedPayments.filter((p) => p.kind === PaymentProofKind.EXTENSION);
+  const overduePayments = approvedPayments.filter((p) => p.kind === PaymentProofKind.OVERDUE);
+  const rentalPaymentsSum = rentalPayments.reduce((s, p) => s + p.amount, 0);
+  const extensionPaymentsSum = extensionPayments.reduce((s, p) => s + p.amount, 0);
+  const overduePaymentsSum = overduePayments.reduce((s, p) => s + p.amount, 0);
 
-  for (const r of rentals) {
-    const key = r.createdAt.toLocaleDateString("en-CA", { timeZone: config.TIMEZONE });
-    const entry = dayMap.get(key);
-    if (entry) {
-      entry.count++;
-      entry.revenue += (r.tariff?.price ?? 0) + (r.extraCost ?? 0);
-    }
-  }
+  // Доски
+  const boards = await prisma.board.findMany();
+  const availableBoards = boards.filter((b) => b.status === BoardStatus.AVAILABLE);
+  const rentedBoards = boards.filter((b) => b.status === BoardStatus.RENTED);
+  const serviceBoards = boards.filter((b) => b.status === BoardStatus.SERVICE);
 
-  const rows = [...dayMap.entries()].map(([iso, val]) => {
-    const d = new Date(`${iso}T12:00:00+06:00`);
-    return { date: shortDate(d), weekday: shortWeekday(d), ...val };
-  });
+  // Продления за сегодня (из extraMinutes/extraCost активных+завершённых)
+  const rentalsWithExtra = paidRentals.filter((r) => r.extraMinutes > 0);
+  const totalExtraMinutes = rentalsWithExtra.reduce((s, r) => s + r.extraMinutes, 0);
 
-  const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
-  const totalCount = rows.reduce((s, r) => s + r.count, 0);
-
-  return { rows, totalRevenue, totalCount };
-}
-
-/** Форматирование недельного отчёта в Telegram HTML с ASCII-гистограммой */
-export function formatWeekReport(data: Awaited<ReturnType<typeof weekReport>>): string {
-  let text = `📈 <b>Неделя</b>\n\n`;
-
-  const maxRev = Math.max(...data.rows.map((r) => r.revenue), 1);
-
-  for (const r of data.rows) {
-    const barLen = Math.round((r.revenue / maxRev) * 8);
-    const bar = "▓".repeat(barLen) + "░".repeat(8 - barLen);
-    text += `<code>${r.date} ${r.weekday}</code> ${bar} ${r.count} шт — ${fmtPrice(r.revenue)}\n`;
-  }
-
-  text += `\n💰 <b>Итого:</b> ${fmtPrice(data.totalRevenue)} (${data.totalCount} аренд)`;
-  return truncateMessage(text);
-}
-
-// ——— Revenue by tariff ———
-
-/**
- * Отчёт по выручке в разрезе тарифов.
- * @param days - Количество дней для анализа (по умолчанию 7)
- */
-export async function tariffReport(days: number = 7) {
-  const since = daysAgo(days);
-
-  const rentals = await prisma.rental.findMany({
-    where: {
-      createdAt: { gte: since },
-      status: { in: [RentalStatus.RETURNED, RentalStatus.RENTED, RentalStatus.WAIT_RETURN] },
-    },
-    include: { tariff: true },
-  });
-
-  const map = new Map<number, { name: string; price: number; count: number; revenue: number }>();
-  for (const r of rentals) {
+  // Тарифы — сколько раз какой использовался
+  const tariffStats = new Map<string, { count: number; revenue: number }>();
+  for (const r of paidRentals) {
     if (!r.tariff) continue;
-    const entry = map.get(r.tariff.id) ?? { name: r.tariff.name, price: r.tariff.price, count: 0, revenue: 0 };
+    const key = `${r.tariff.name} (${fmtPrice(r.tariff.price)})`;
+    const entry = tariffStats.get(key) ?? { count: 0, revenue: 0 };
     entry.count++;
-    entry.revenue += r.tariff.price + (r.extraCost ?? 0);
-    map.set(r.tariff.id, entry);
+    entry.revenue += r.tariff.price;
+    tariffStats.set(key, entry);
   }
 
-  const rows = [...map.values()].sort((a, b) => b.revenue - a.revenue);
-  const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
-  const totalCount = rows.reduce((s, r) => s + r.count, 0);
+  // Walk-in vs клиентские аренды
+  const walkinCount = paidRentals.filter((r) => r.sellerUserId).length;
+  const clientCount = paidRentals.filter((r) => !r.sellerUserId).length;
 
-  return { rows, totalRevenue, totalCount };
+  // Просрочки среди завершённых
+  let overdueCount = 0;
+  let totalOverdueMinutes = 0;
+  for (const r of completed) {
+    if (r.startAt && r.endAt && r.tariff) {
+      const paidMinutes = r.tariff.durationMinutes + r.extraMinutes;
+      const actualMinutes = Math.ceil((r.endAt.getTime() - r.startAt.getTime()) / 60_000);
+      const overdue = Math.max(0, actualMinutes - paidMinutes);
+      if (overdue > 0) {
+        overdueCount++;
+        totalOverdueMinutes += overdue;
+      }
+    }
+  }
+
+  return {
+    // Аренды
+    totalRentals: rentals.length,
+    active, completed, cancelled, pending,
+    paidCount: paidRentals.length,
+    walkinCount, clientCount,
+    // Выручка
+    totalRevenue, baseTariffRevenue, extraRevenue, avgCheck,
+    // Оплаты
+    approvedPayments: approvedPayments.length,
+    rejectedPayments: rejectedPayments.length,
+    pendingPayments: pendingPayments.length,
+    rentalPaymentsSum, extensionPaymentsSum, overduePaymentsSum,
+    // Доски
+    totalBoards: boards.length,
+    availableBoards: availableBoards.length,
+    rentedBoards: rentedBoards.length,
+    serviceBoards: serviceBoards.length,
+    // Продления
+    extensionCount: rentalsWithExtra.length,
+    totalExtraMinutes,
+    // Просрочки
+    overdueCount, totalOverdueMinutes,
+    // Тарифы
+    tariffStats,
+  };
 }
 
-/** Форматирование отчёта по тарифам в Telegram HTML с процентами */
-export function formatTariffReport(data: Awaited<ReturnType<typeof tariffReport>>): string {
-  let text = `💵 <b>Выручка по тарифам (7 дней)</b>\n\n`;
-  if (data.rows.length === 0) {
-    text += "Нет данных за период.\n";
-    return text;
+/** Форматирование дневного отчёта в Telegram HTML */
+export function formatDailyReport(data: Awaited<ReturnType<typeof dailyReport>>): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("ru-RU", {
+    timeZone: config.TIMEZONE,
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    weekday: "long",
+  });
+
+  let text = `📊 <b>Сводка за день</b>\n`;
+  text += `📅 ${dateStr}\n`;
+
+  // ─── Выручка ───
+  text += `\n<b>💰 Выручка</b>\n`;
+  text += `Общая: <b>${fmtPrice(data.totalRevenue)}</b>\n`;
+  if (data.baseTariffRevenue > 0) {
+    text += `  ├ Аренды: ${fmtPrice(data.baseTariffRevenue)}\n`;
+  }
+  if (data.extraRevenue > 0) {
+    text += `  └ Доплаты: ${fmtPrice(data.extraRevenue)}\n`;
+  }
+  if (data.paidCount > 0) {
+    text += `Средний чек: <b>${fmtPrice(data.avgCheck)}</b>\n`;
   }
 
-  for (const t of data.rows) {
-    const pct = data.totalRevenue > 0 ? Math.round((t.revenue / data.totalRevenue) * 100) : 0;
-    text += `▸ <b>${t.name}</b> (${fmtPrice(t.price)})\n`;
-    text += `   ${t.count} аренд → ${fmtPrice(t.revenue)} (${pct}%)\n\n`;
+  // ─── Аренды ───
+  text += `\n<b>🏄 Аренды</b> (${data.totalRentals})\n`;
+  if (data.active.length > 0) {
+    text += `  🔵 Активных: <b>${data.active.length}</b>\n`;
+  }
+  if (data.completed.length > 0) {
+    text += `  ✅ Завершённых: <b>${data.completed.length}</b>\n`;
+  }
+  if (data.pending.length > 0) {
+    text += `  ⏳ В обработке: <b>${data.pending.length}</b>\n`;
+  }
+  if (data.cancelled.length > 0) {
+    text += `  ❌ Отменённых: <b>${data.cancelled.length}</b>\n`;
+  }
+  if (data.walkinCount > 0 || data.clientCount > 0) {
+    text += `  👤 Walk-in: ${data.walkinCount}  ·  📱 Через бота: ${data.clientCount}\n`;
   }
 
-  text += `💰 <b>Итого:</b> ${fmtPrice(data.totalRevenue)} (${data.totalCount} аренд)`;
+  // ─── Оплаты ───
+  text += `\n<b>💳 Оплаты</b>\n`;
+  text += `  ✅ Принято: <b>${data.approvedPayments}</b>\n`;
+  if (data.rejectedPayments > 0) {
+    text += `  ❌ Отклонено: <b>${data.rejectedPayments}</b>\n`;
+  }
+  if (data.pendingPayments > 0) {
+    text += `  🔍 На проверке: <b>${data.pendingPayments}</b>\n`;
+  }
+  if (data.rentalPaymentsSum > 0 || data.extensionPaymentsSum > 0 || data.overduePaymentsSum > 0) {
+    text += `  <b>По категориям:</b>\n`;
+    if (data.rentalPaymentsSum > 0) {
+      text += `    🏄 Аренды: ${fmtPrice(data.rentalPaymentsSum)}\n`;
+    }
+    if (data.extensionPaymentsSum > 0) {
+      text += `    ⏱ Продления: ${fmtPrice(data.extensionPaymentsSum)}\n`;
+    }
+    if (data.overduePaymentsSum > 0) {
+      text += `    ⚠️ Просрочки: ${fmtPrice(data.overduePaymentsSum)}\n`;
+    }
+  }
+
+  // ─── Продления и просрочки ───
+  if (data.extensionCount > 0 || data.overdueCount > 0) {
+    text += `\n<b>⏱ Продления и просрочки</b>\n`;
+    if (data.extensionCount > 0) {
+      text += `  Продлений: <b>${data.extensionCount}</b> (+${fmtDuration(data.totalExtraMinutes)})\n`;
+    }
+    if (data.overdueCount > 0) {
+      text += `  Просрочек: <b>${data.overdueCount}</b> (${fmtDuration(data.totalOverdueMinutes)})\n`;
+    }
+  }
+
+  // ─── Тарифы ───
+  if (data.tariffStats.size > 0) {
+    text += `\n<b>📋 По тарифам</b>\n`;
+    const sorted = [...data.tariffStats.entries()].sort((a, b) => b[1].count - a[1].count);
+    for (const [name, stat] of sorted) {
+      text += `  ▸ ${name}: <b>${stat.count}</b> шт — ${fmtPrice(stat.revenue)}\n`;
+    }
+  }
+
+  // ─── Доски ───
+  text += `\n<b>🏄 Доски</b> (${data.totalBoards})\n`;
+  text += `  🟢 Свободно: <b>${data.availableBoards}</b>\n`;
+  if (data.rentedBoards > 0) {
+    text += `  🔵 В аренде: <b>${data.rentedBoards}</b>\n`;
+  }
+  if (data.serviceBoards > 0) {
+    text += `  🔧 На обслуживании: <b>${data.serviceBoards}</b>\n`;
+  }
+
   return truncateMessage(text);
 }

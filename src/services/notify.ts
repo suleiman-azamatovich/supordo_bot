@@ -1,4 +1,4 @@
-import { Api, InputFile } from "grammy";
+import { Api, InlineKeyboard, InputFile } from "grammy";
 import path from "path";
 import fs from "fs";
 import { prisma } from "../db/prisma";
@@ -6,24 +6,20 @@ import { fmtPrice } from "../ui/helpers";
 
 const MBANK_QR_PATH = path.join(__dirname, "..", "..", "qr-bank", "mbank_qr.jpeg");
 
-const AUTO_DELETE_MS = 60_000; // удалять сообщение из чата через 60 сек
-
 /**
  * Отправить уведомление:
- * 1. Сохранить в БД (чтоб пользователь мог посмотреть потом)
- * 2. Отправить сообщение в чат
- * 3. Удалить через 60 сек чтоб не захламлять
+ * 1. Сохранить в БД (чтоб пользователь мог посмотреть в разделе «Уведомления»)
+ * 2. Отправить сообщение в чат (остаётся пока пользователь сам не удалит)
  */
 export async function notify(
   api: Api,
   tgId: bigint | number,
   text: string,
-  opts?: { parseMode?: "HTML"; deleteAfterMs?: number }
+  opts?: { parseMode?: "HTML" }
 ) {
   const chatId = Number(tgId);
-  const deleteMs = opts?.deleteAfterMs ?? AUTO_DELETE_MS;
 
-  // Save to DB (fire-and-forget, don't block send)
+  // Сохраняем в БД
   prisma.user.findUnique({ where: { tgId: BigInt(chatId) } }).then((user) => {
     if (user) {
       prisma.notification.create({
@@ -32,20 +28,11 @@ export async function notify(
     }
   }).catch((e) => console.error('[notify] Ошибка поиска пользователя:', e));
 
-  // Send message
+  // Отправляем сообщение в чат
   try {
-    const msg = await api.sendMessage(chatId, text, {
+    await api.sendMessage(chatId, text, {
       parse_mode: opts?.parseMode ?? "HTML",
     });
-
-    // Auto-delete from chat
-    if (deleteMs > 0) {
-      setTimeout(async () => {
-        try {
-          await api.deleteMessage(chatId, msg.message_id);
-        } catch { /* already deleted or can't delete */ }
-      }, deleteMs);
-    }
   } catch (e) {
     console.error(`[notify] Failed to send to ${chatId}:`, e);
   }
@@ -55,20 +42,31 @@ export async function notify(
 export async function sendMBankQRToChat(
   api: Api,
   chatId: number | bigint,
-  amount: number
+  amount: number,
+  rentalId?: number
 ) {
   const caption =
-    `💳 <b>Оплата через MBank</b>\n\n` +
-    `Отсканируйте QR-код в приложении MBank и переведите <b>${fmtPrice(amount)}</b>.\n` +
-    `После перевода администратор подтвердит оплату.`;
+    `💳 <b>Оплата: ${fmtPrice(amount)}</b>\n\n` +
+    `📱 Отсканируйте QR-код через <b>любой мобильный банкинг</b> (MBank, O!, Бакай и др.)\n` +
+    `💵 Или оплатите <b>наличными</b> на точке проката.\n\n` +
+    `После оплаты нажмите <b>«✅ Я оплатил»</b>.`;
+
+  const kb = rentalId
+    ? new InlineKeyboard()
+      .text("✅ Я оплатил", `rent:paid:${rentalId}`)
+      .row()
+      .text("⬅️ Меню", "back:menu")
+    : undefined;
+
   try {
     if (!fs.existsSync(MBANK_QR_PATH)) {
-      await api.sendMessage(Number(chatId), caption, { parse_mode: "HTML" });
+      await api.sendMessage(Number(chatId), caption, { parse_mode: "HTML", reply_markup: kb });
       return;
     }
     await api.sendPhoto(Number(chatId), new InputFile(MBANK_QR_PATH), {
       caption,
       parse_mode: "HTML",
+      reply_markup: kb,
     });
   } catch (e) {
     console.error("Failed to send MBank QR:", e);
@@ -81,12 +79,13 @@ function stripHtml(html: string): string {
 }
 
 /** Get notifications for user (last 24h) */
+/** Получить уведомления пользователя за последние 24ч */
 export async function getNotifications(userId: number) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   return prisma.notification.findMany({
     where: { userId, createdAt: { gte: since } },
     orderBy: { createdAt: "desc" },
-    take: 20,
+    take: 50,
   });
 }
 

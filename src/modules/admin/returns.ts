@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Возвраты и принятие досок (администратор).
  *
  * Объединяет хендлеры из бывших admin.ts и seller.ts:
@@ -24,7 +24,7 @@ import {
 } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
 import { notify, sendMBankQRToChat } from "../../services/notify";
-import { RentalStatus, Role } from "@prisma/client";
+import { RentalStatus, PaymentProofKind, Role } from "@prisma/client";
 
 export const returnsHandlers = new Composer<BotContext>();
 
@@ -52,7 +52,7 @@ returnsHandlers.callbackQuery(/^admin:returns(:(\d+))?$/, async (ctx) => {
   const now = new Date();
 
   let text = `🔄 <b>Аренды и возвраты</b>\n`;
-  text += `⏰ Ожидают возврата: <b>${waitReturn}</b>  ·  🔴 В аренде: <b>${active}</b>\n\n`;
+  text += `⏰ Ожидают возврата: <b>${waitReturn}</b>  ·  🔵 В аренде: <b>${active}</b>\n\n`;
   if (paged.items.length === 0) {
     text += "Нет активных аренд.";
   }
@@ -61,7 +61,7 @@ returnsHandlers.callbackQuery(/^admin:returns(:(\d+))?$/, async (ctx) => {
   for (const r of paged.items) {
     const client = escapeHtml(r.clientName ?? r.user.name);
     const isExpired = r.status === RentalStatus.WAIT_RETURN;
-    const icon = isExpired ? "⏰" : "🔴";
+    const icon = isExpired ? "⏰" : "🔵";
 
     text += `${icon} <b>${r.board.code}</b> — ${client}`;
     if (r.pendingExtraMinutes) {
@@ -79,7 +79,7 @@ returnsHandlers.callbackQuery(/^admin:returns(:(\d+))?$/, async (ctx) => {
         } else {
           const graceMs = await rentalService.getEndGraceMs();
           const graceLabel = graceMs >= 60_000 ? `${Math.round(graceMs / 60_000)} мин` : `${Math.round(graceMs / 1_000)} сек`;
-          text += `     грейс-период (${graceLabel})\n`;
+          text += `     бесплатное время на возврат (${graceLabel})\n`;
         }
       } else {
         const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
@@ -87,20 +87,17 @@ returnsHandlers.callbackQuery(/^admin:returns(:(\d+))?$/, async (ctx) => {
       }
     }
     text += `\n`;
-    kb.text(`✅ Принять ${r.board.code}`, `seller:return:${r.id}`);
+    kb.text(`✅ Принять ${r.board.code}`, `return:confirm:${r.id}`);
     if (r.pendingExtraMinutes) {
       kb.text(`⏱ ✅ +${fmtDuration(r.pendingExtraMinutes)}`, `ext:approve:${r.id}`);
     } else {
       kb.text(`⏱ +`, `admin:extend:${r.id}`);
     }
     kb.row();
-    if (isExpired) {
-      kb.text(`🔄 Закрыть просрочку`, `admin:close_overdue:${r.id}`).row();
-    }
   }
   addPaginationRow(kb, paged.page, paged.totalPages, "admin:returns:");
   kb.text("🔄 Обновить", "admin:returns").row();
-  kb.text("📋 Панель", "admin:dashboard").text("⬅️ Меню", "back:menu");
+  kb.text("⬅️ Меню", "back:menu").text("🧹 Убрать лишнее", "clear:chat");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
@@ -152,7 +149,7 @@ returnsHandlers.callbackQuery(/^seller:rented(:(\d+))?$/, async (ctx) => {
           } else {
             const graceMs = await rentalService.getEndGraceMs();
             const graceLabel = graceMs >= 60_000 ? `${Math.round(graceMs / 60_000)} мин` : `${Math.round(graceMs / 1_000)} сек`;
-            text += `   ⏰ <b>Время вышло! Грейс ${graceLabel}</b>\n`;
+            text += `   ⏰ <b>Время вышло! Возврат без штрафа: ${graceLabel}</b>\n`;
           }
         } else if (remaining > 0) {
           text += `   ⏳ Осталось: <b>${fmtDuration(remaining)}</b>\n`;
@@ -161,15 +158,16 @@ returnsHandlers.callbackQuery(/^seller:rented(:(\d+))?$/, async (ctx) => {
     }
     text += "\n";
 
-    kb.text(`✅ Принять ${r.board.code}`, `seller:return:${r.id}`).row();
+    kb.text(`✅ Принять ${r.board.code}`, `return:confirm:${r.id}`).row();
   }
   addPaginationRow(kb, paged.page, paged.totalPages, "seller:rented:");
-  kb.row().text("⬅️ Меню", "back:menu");
+  kb.row().text("⬅️ Меню", "back:menu").text("🧹 Убрать лишнее", "clear:chat");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
 
 /** Список возвратов на точке (seller:returns) */
+
 returnsHandlers.callbackQuery(/^seller:returns(:(\d+))?$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const page = parseInt(ctx.match?.[2] ?? "1");
@@ -197,145 +195,171 @@ returnsHandlers.callbackQuery(/^seller:returns(:(\d+))?$/, async (ctx) => {
     const icon = expired ? "🔴" : "🟡";
     const tag = expired ? " ⏰ время вышло!" : "";
     text += `${icon} #${r.id} — ${r.board.code} → ${escapeHtml(r.clientName ?? r.user.name)}${tag}\n`;
-    kb.text(`✅ Принять ${r.board.code}`, `seller:return:${r.id}`).row();
+    kb.text(`✅ Принять ${r.board.code}`, `return:confirm:${r.id}`).row();
   }
   addPaginationRow(kb, paged.page, paged.totalPages, "seller:returns:");
-  kb.row().text("⬅️ Меню", "back:menu");
+  kb.row().text("⬅️ Меню", "back:menu").text("🧹 Убрать лишнее", "clear:chat");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
 
 /**
- * Принятие возврата доски (seller:return).
+ * Единый экран подтверждения завершения аренды.
  *
- * Вызывает rentalService.completeReturn, который:
- *  1. Завершает аренду (статус RETURNED)
- *  2. Освобождает доску (статус AVAILABLE)
- *  3. Считает просрочку и создаёт счёт при необходимости
- *  4. Формирует текст чека
+ * Показывает итоговые данные (доска, клиент, время, просрочка, стоимость)
+ * и кнопку подтверждения. Вызывается из любого места:
+ *  - Список возвратов (admin:returns, seller:rented, seller:returns)
+ *  - Детали доски (admin:board_detail)
+ *  - Меню продления (admin:extend)
  */
-returnsHandlers.callbackQuery(/^seller:return:(\d+)$/, async (ctx) => {
+returnsHandlers.callbackQuery(/^return:confirm:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
-  try {
-    const { receipt, overdueCost, clientMsg, clientTgId, overdueProofId } =
-      await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
-
-    const isAdmin = ctx.dbUser!.role === Role.ADMIN;
-    const backAction = isAdmin ? "admin:returns" : "seller:returns";
-
-    let sellerMsg = `✅ <b>Аренда завершена!</b>\n\n` + receipt;
-    if (overdueCost > 0) {
-      sellerMsg += `\n⚠️ Создан счёт на доплату за просрочку: <b>${fmtPrice(overdueCost)}</b>`;
-    }
-
-    await ctx.editMessageText(sellerMsg, {
-      parse_mode: "HTML",
-      reply_markup: new InlineKeyboard()
-        .text("🔄 Возвраты", backAction)
-        .text("⬅️ Меню", "back:menu"),
-    });
-
-    // Отправляем чек клиенту
-    await notify(ctx.api, clientTgId, clientMsg, { deleteAfterMs: 0 });
-
-    // Если есть просрочка — QR и уведомление админам
-    if (overdueCost > 0 && overdueProofId) {
-      await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
-
-      const [admins, rental] = await Promise.all([
-        prisma.user.findMany({ where: { role: Role.ADMIN } }),
-        prisma.rental.findUniqueOrThrow({
-          where: { id: rentalId },
-          include: { board: true, user: true },
-        }),
-      ]);
-      await Promise.all(admins.filter((a) => a.id !== ctx.dbUser!.id).map((admin) =>
-        ctx.api.sendMessage(
-          Number(admin.tgId),
-          `⏰ <b>Доплата за просрочку #${overdueProofId}</b>\n\n` +
-          `👤 ${rental.user.name}\n` +
-          `🏄 Доска: ${rental.board.code}\n` +
-          `💰 Сумма: <b>${fmtPrice(overdueCost)}</b>\n\n` +
-          `Ожидается оплата от клиента.`,
-          {
-            parse_mode: "HTML",
-            reply_markup: new InlineKeyboard()
-              .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
-              .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
-          }
-        ).catch((e) => console.error('[returns] Ошибка уведомления админа:', e))
-      ));
-    }
-  } catch (e: any) {
-    await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
-  }
-});
-
-/** Подтверждение завершения аренды (показ чека и кнопки «Да, завершить») */
-returnsHandlers.callbackQuery(/^admin:complete_rental_confirm:(\d+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const rentalId = parseInt(ctx.match[1]);
-
-  const receipt = await rentalService.getRentalReceipt(rentalId);
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
-    include: { board: true },
+    include: { board: true, tariff: true, user: true },
   });
 
-  let text = `⚠️ <b>Завершить аренду #${rentalId}?</b>\n\n`;
-  text += receipt;
-  text += `\n\n⚠️ Доска будет возвращена в доступные. Клиент получит итоговый отчёт.`;
+  if (!['RENTED', 'WAIT_RETURN'].includes(rental.status)) {
+    return ctx.editMessageText("⚠️ Аренда уже завершена или отменена.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
+  }
 
-  const kb = new InlineKeyboard()
-    .text("✅ Да, завершить", `admin:complete_rental:${rentalId}`)
-    .text("⬅️ Назад", `admin:board_detail:${rental.boardId}`)
-    .row()
-    .text("⬅️ Меню", "back:menu");
+  const client = escapeHtml(rental.clientName ?? rental.user.name);
+  const isExpired = rental.status === RentalStatus.WAIT_RETURN;
+
+  let text = `🔄 <b>Принять доску #${rentalId}?</b>\n\n`;
+  text += `🏄 Доска: <b>${rental.board.code}</b>\n`;
+  text += `👤 Клиент: <b>${client}</b>\n`;
+
+  if (rental.tariff) {
+    text += `📋 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+  }
+  if (rental.startAt) {
+    text += `⏱ Начало: ${fmtDate(rental.startAt)}\n`;
+    if (rental.tariff) {
+      const now = new Date();
+      const actualMin = Math.ceil((now.getTime() - rental.startAt.getTime()) / 60_000);
+      text += `⏳ Прошло: <b>${fmtDuration(actualMin)}</b>\n`;
+    }
+  }
+
+  let overdueMin = 0;
+  let overdueCost = 0;
+  if (isExpired) {
+    overdueMin = await rentalService.getOverdueMinutes(rental);
+    if (overdueMin > 0) {
+      overdueCost = overdueMin * rentalService.OVERDUE_RATE_PER_MIN;
+      text += `\n⚠️ <b>Просрочка: ${fmtDuration(overdueMin)} — ${fmtPrice(overdueCost)}</b>\n`;
+    }
+  }
+
+  const kb = new InlineKeyboard();
+  kb.text("✅ Принять доску", `return:complete:${rentalId}`).row();
+  if (overdueCost > 0) {
+    kb.text(`💰 Принять + счёт ${fmtPrice(overdueCost)}`, `return:invoice:${rentalId}`).row();
+  }
+  kb.text("⬅️ Меню", "back:menu");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
 
-/** Выполнение завершения аренды — освобождение доски и уведомление клиента */
-returnsHandlers.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
+/**
+ * Исполнение завершения аренды.
+ *
+ * Вызывает completeReturn → освобождает доску, уведомляет клиента.
+ */
+returnsHandlers.callbackQuery(/^return:complete:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
   try {
-    const { receipt, overdueCost, clientMsg, clientTgId, overdueProofId } =
+    const { clientTgId } =
       await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
 
-    let msg = `✅ Аренда завершена!\n\n` + receipt;
-    if (overdueCost > 0) {
-      msg += `\n⚠️ Создан счёт на доплату за просрочку: <b>${fmtPrice(overdueCost)}</b>`;
-    }
+    // Простое принятие — просрочка не выставляется (overdueBilled = 0)
+    const receipt = await rentalService.getRentalReceipt(rentalId);
 
-    await ctx.editMessageText(msg, {
+    await ctx.editMessageText(`✅ <b>Аренда завершена!</b>\n\n` + receipt, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("🔄 Возвраты", "admin:returns")
         .text("🏄 Доски", "admin:boards")
-        .row()
         .text("⬅️ Меню", "back:menu"),
     });
 
-    await notify(ctx.api, clientTgId, clientMsg, { deleteAfterMs: 0 });
+    await notify(ctx.api, clientTgId,
+      `✅ <b>Аренда завершена!</b>\n\n` + receipt + `\nСпасибо за аренду! 🌊`
+    );
+  } catch (e: any) {
+    await ctx.editMessageText(`⚠️ ${e.message}`, {
+      reply_markup: new InlineKeyboard()
+        .text("⬅️ Меню", "back:menu"),
+    });
+  }
+});
 
-    if (overdueCost > 0 && overdueProofId) {
-      await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost);
+/**
+ * Принять доску + выставить счёт за просрочку.
+ *
+ * Завершает аренду, освобождает доску. Создаёт PaymentProof(OVERDUE)
+ * и отправляет клиенту QR с кнопкой «Я оплатил».
+ */
+returnsHandlers.callbackQuery(/^return:invoice:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
 
-      const [admins, rental] = await Promise.all([
-        prisma.user.findMany({ where: { role: Role.ADMIN } }),
-        prisma.rental.findUniqueOrThrow({
-          where: { id: rentalId },
-          include: { board: true, user: true },
-        }),
-      ]);
-      await Promise.all(admins.filter((a) => a.id !== ctx.dbUser!.id).map((admin) =>
+  try {
+    const { overdueCost, clientTgId } =
+      await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
+
+    // Чек с учётом выставленной просрочки
+    const receipt = await rentalService.getRentalReceipt(rentalId, overdueCost);
+
+    // Создаём OVERDUE proof если есть просрочка
+    if (overdueCost > 0) {
+      const rental = await prisma.rental.findUniqueOrThrow({
+        where: { id: rentalId },
+        include: { board: true, user: true },
+      });
+
+      const proof = await prisma.paymentProof.create({
+        data: {
+          kind: PaymentProofKind.OVERDUE,
+          refId: rentalId,
+          amount: overdueCost,
+          userId: rental.userId,
+          text: `Просрочка по аренде #${rentalId}`,
+        },
+      });
+      const overdueProofId = proof.id;
+
+      // Админу — результат
+      await ctx.editMessageText(
+        `✅ <b>Доска принята, счёт выставлен!</b>\n\n` + receipt +
+        `\n💰 Счёт на просрочку: <b>${fmtPrice(overdueCost)}</b>\nQR отправлен клиенту.`,
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .text("🏄 Доски", "admin:boards")
+            .text("⬅️ Меню", "back:menu"),
+        }
+      );
+
+      // Клиенту — доска принята, ожидает оплаты (НЕ "Аренда завершена")
+      await notify(ctx.api, clientTgId,
+        `🏄 <b>Доска принята!</b>\n\n` + receipt +
+        `\n⚠️ К оплате за просрочку: <b>${fmtPrice(overdueCost)}</b>\n📱 Оплатите через мобильный банкинг по QR ниже или 💵 наличными на точке.`
+      );
+      await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost, rentalId);
+
+      // Уведомляем остальных админов
+      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
+      await Promise.all(admins.filter(a => a.id !== ctx.dbUser!.id).map(admin =>
         ctx.api.sendMessage(
           Number(admin.tgId),
-          `⏰ <b>Доплата за просрочку #${overdueProofId}</b>\n\n` +
+          `⏰ <b>Счёт за просрочку #${overdueProofId}</b>\n\n` +
           `👤 ${rental.user.name}\n` +
           `🏄 Доска: ${rental.board.code}\n` +
           `💰 Сумма: <b>${fmtPrice(overdueCost)}</b>\n\n` +
@@ -346,10 +370,27 @@ returnsHandlers.callbackQuery(/^admin:complete_rental:(\d+)$/, async (ctx) => {
               .text("✅ Подтвердить", `pay:approve:${overdueProofId}`)
               .text("❌ Отклонить", `pay:reject:${overdueProofId}`),
           }
-        ).catch((e) => console.error('[returns] Ошибка уведомления админа:', e))
+        ).catch(e => console.error('[returns] Ошибка уведомления админа:', e))
       ));
+    } else {
+      // Нет просрочки — обычное завершение
+      await ctx.editMessageText(
+        `✅ <b>Аренда завершена!</b>\n\n` + receipt,
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .text("🏄 Доски", "admin:boards")
+            .text("⬅️ Меню", "back:menu"),
+        }
+      );
+      await notify(ctx.api, clientTgId,
+        `✅ <b>Аренда завершена!</b>\n\n` + receipt + `\nСпасибо за аренду! 🌊`
+      );
     }
   } catch (e: any) {
-    await ctx.editMessageText(`⚠️ Ошибка: ${e.message}`);
+    await ctx.editMessageText(`⚠️ ${e.message}`, {
+      reply_markup: new InlineKeyboard()
+        .text("⬅️ Меню", "back:menu"),
+    });
   }
 });

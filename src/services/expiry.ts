@@ -22,6 +22,17 @@ const warnedRentals = new Set<number>();
 const expiredNotifiedRentals = new Set<number>();
 
 /**
+ * Сбросить трекинг уведомлений для аренды.
+ *
+ * Вызывается при продлении с чистым временем — чтобы expiry checker
+ * заново рассчитал предупреждения по новому сроку.
+ */
+export function resetExpiryTracking(rentalId: number) {
+  warnedRentals.delete(rentalId);
+  expiredNotifiedRentals.delete(rentalId);
+}
+
+/**
  * Запустить фоновый чекер истечения аренд.
  *
  * Выполняет первый tick() сразу, затем повторяет каждые 30 секунд.
@@ -43,6 +54,9 @@ export function startExpiryChecker(api: Api) {
 
       // --- Cancel unpaid rentals that have been stuck for too long ---
       await cancelStaleRentals(api, now, UNPAID_TIMEOUT_MS);
+
+      // --- Auto-reject stale extension payments ---
+      await rejectStaleExtensions(api, now, UNPAID_TIMEOUT_MS);
 
       const activeRentals = await prisma.rental.findMany({
         where: {
@@ -121,7 +135,7 @@ export function startExpiryChecker(api: Api) {
               api,
               chatId,
               `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-              `У вас есть ${graceLabel} чтобы вернуть доску. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
+              `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
             );
           } catch (e) {
             console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
@@ -133,7 +147,7 @@ export function startExpiryChecker(api: Api) {
             `⏰ Время аренды #${rental.id} истекло!\n` +
             `Доска: ${rental.board.code}\n` +
             `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
-            `Грейс: ${graceLabel} до начала просрочки.`
+            `Бесплатное время на возврат: ${graceLabel}`
           );
         }
 
@@ -155,7 +169,7 @@ export function startExpiryChecker(api: Api) {
             await notify(
               api,
               chatId,
-              `⚠️ Грейс-период истёк! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
+              `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
               `Верните доску ${rental.board.code} как можно скорее!`
             );
           } catch (e) {
@@ -205,7 +219,7 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
 
   const staleRentals = await prisma.rental.findMany({
     where: {
-      status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT] },
+      status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT, RentalStatus.WAIT_ADMIN] },
       createdAt: { lt: cutoff },
     },
     include: { board: true, user: true },
@@ -222,6 +236,15 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
           where: { id: rental.boardId },
           data: { status: BoardStatus.AVAILABLE },
         });
+        // Отклоняем незакрытые чеки оплаты (аренда + продление)
+        await tx.paymentProof.updateMany({
+          where: {
+            refId: rental.id,
+            kind: { in: ["RENTAL", "EXTENSION"] },
+            status: "SUBMITTED",
+          },
+          data: { status: "REJECTED" },
+        });
       });
 
       console.log(`[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) отменена — не оплачена за ${UNPAID_TIMEOUT_MS / 60_000} мин`);
@@ -235,6 +258,47 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
       } catch { }
     } catch (e) {
       console.error(`[expiry] Ошибка отмены stale аренды #${rental.id}:`, e);
+    }
+  }
+}
+
+/** Авто-отклонение неоплаченных продлений (EXTENSION) по таймауту */
+async function rejectStaleExtensions(api: Api, now: Date, UNPAID_TIMEOUT_MS: number) {
+  const cutoff = new Date(now.getTime() - UNPAID_TIMEOUT_MS);
+
+  const staleProofs = await prisma.paymentProof.findMany({
+    where: {
+      kind: "EXTENSION",
+      status: "SUBMITTED",
+      createdAt: { lt: cutoff },
+    },
+    include: { user: true },
+  });
+
+  for (const proof of staleProofs) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.paymentProof.update({
+          where: { id: proof.id },
+          data: { status: "REJECTED" },
+        });
+        await tx.rental.update({
+          where: { id: proof.refId },
+          data: { pendingExtraMinutes: null },
+        });
+      });
+
+      console.log(`[expiry] ⏰ Оплата продления #${proof.id} (аренда #${proof.refId}) отклонена — не подтверждена за ${UNPAID_TIMEOUT_MS / 60_000} мин`);
+
+      try {
+        await notify(
+          api,
+          Number(proof.user.tgId),
+          `❌ Запрос на продление аренды #${proof.refId} автоматически отклонён — оплата не подтверждена в течение ${UNPAID_TIMEOUT_MS / 60_000} минут.`
+        );
+      } catch { }
+    } catch (e) {
+      console.error(`[expiry] Ошибка отклонения stale продления #${proof.id}:`, e);
     }
   }
 }

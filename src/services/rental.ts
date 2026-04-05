@@ -17,6 +17,7 @@ import {
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../ui/helpers";
+import { resetExpiryTracking } from "./expiry";
 
 /** Проверяет, включён ли тестовый режим (самый короткий тариф ≤ 3 мин) */
 let _testModeCache: { value: boolean; ts: number } | null = null;
@@ -58,10 +59,10 @@ export async function getEndGraceMs(): Promise<number> {
 /**
  * Таймаут отмены неоплаченных аренд (CREATED/WAIT_PAYMENT).
  * После истечения аренда автоматически отменяется.
- * @returns Таймаут в миллисекундах: 10 сек (тест) | 15 мин (рабочий)
+ * @returns Таймаут в миллисекундах: 3 мин (тест) | 8 мин (рабочий)
  */
 export async function getUnpaidTimeoutMs(): Promise<number> {
-  return (await isTestMode()) ? 10_000 : 15 * 60_000;
+  return (await isTestMode()) ? 3 * 60_000 : 8 * 60_000;
 }
 
 /** Ставка просрочки (сом за минуту после грейс-периода) */
@@ -268,7 +269,10 @@ export async function approveRental(rentalId: number, adminUserId: number) {
     where: { id: updated.boardId },
     data: { status: BoardStatus.RENTED },
   });
-  await audit.log(adminUserId, "Rental", rentalId, AuditAction.APPROVED_AND_RENTED);
+  await audit.log(adminUserId, "Rental", rentalId, AuditAction.APPROVED_AND_RENTED, {
+    boardId: updated.boardId,
+    tariffId: rental.tariffId,
+  });
   return updated;
 }
 
@@ -311,54 +315,35 @@ export async function completeReturn(rentalId: number, actorUserId: number) {
 
   const { overdueCost } = await calculateOverdueCost(rentalBefore);
 
-  // Атомарная транзакция: возврат + создание чека просрочки
-  const { overdueProofId } = await prisma.$transaction(async (tx) => {
-    // Возврат доски
+  // Атомарная транзакция: возврат + освобождение доски
+  // overdueCost НЕ добавляется в extraCost — просрочка оплачивается отдельно
+  // через PaymentProof(OVERDUE) в return:invoice, или списывается при return:complete
+  await prisma.$transaction(async (tx) => {
     await tx.rental.update({
       where: { id: rentalId },
-      data: { status: RentalStatus.RETURNED, endAt: new Date() },
+      data: {
+        status: RentalStatus.RETURNED,
+        endAt: new Date(),
+      },
     });
+
     await tx.board.update({
       where: { id: rentalBefore.boardId },
       data: { status: BoardStatus.AVAILABLE },
     });
-
-    // Создание чека просрочки (если есть)
-    let proofId: number | null = null;
-    if (overdueCost > 0) {
-      const proof = await tx.paymentProof.create({
-        data: {
-          kind: PaymentProofKind.OVERDUE,
-          refId: rentalId,
-          amount: overdueCost,
-          userId: rentalBefore.userId,
-          text: `Просрочка по аренде #${rentalId}`,
-        },
-      });
-      proofId = proof.id;
-    }
-
-    return { overdueProofId: proofId };
   });
 
-  await audit.log(actorUserId, "Rental", rentalId, AuditAction.RETURNED);
-
-  const receipt = await getRentalReceipt(rentalId);
+  await audit.log(actorUserId, "Rental", rentalId, AuditAction.RETURNED, {
+    overdueCost,
+    boardCode: rentalBefore.board.code,
+  });
 
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
     include: { board: true, user: true },
   });
 
-  // Build client message
-  let clientMsg = `✅ <b>Аренда завершена!</b>\n\n` + receipt;
-  if (overdueCost > 0) {
-    clientMsg += `\n⚠️ У вас задолженность за просрочку: <b>${fmtPrice(overdueCost)}</b>.\nОплатите через MBank по QR-коду ниже.`;
-  } else {
-    clientMsg += `\nСпасибо за аренду! 🌊`;
-  }
-
-  return { rental, receipt, overdueCost, clientMsg, clientTgId: rental.user.tgId, overdueProofId };
+  return { rental, overdueCost, clientTgId: rental.user.tgId };
 }
 
 /**
@@ -400,6 +385,11 @@ export async function extendRental(rentalId: number, minutes: number, userId: nu
   const cost = extensionCost ?? 0;
 
   const newExtra = (rental.extraMinutes ?? 0) + minutes;
+  const netMinutes = Math.max(0, minutes - overdueMinutes);
+
+  // Статус: RENTED только если продление даёт чистое время.
+  // Если всё ушло на покрытие просрочки — оставляем текущий статус.
+  const newStatus = netMinutes > 0 ? RentalStatus.RENTED : rental.status;
 
   const updated = await prisma.rental.update({
     where: { id: rentalId },
@@ -407,16 +397,19 @@ export async function extendRental(rentalId: number, minutes: number, userId: nu
       extraMinutes: newExtra,
       extraCost: { increment: cost },
       pendingExtraMinutes: null,
-      status: RentalStatus.RENTED,
+      status: newStatus,
     },
   });
 
-  await prisma.board.update({
-    where: { id: rental.boardId },
-    data: { status: BoardStatus.RENTED },
-  });
+  if (netMinutes > 0) {
+    await prisma.board.update({
+      where: { id: rental.boardId },
+      data: { status: BoardStatus.RENTED },
+    });
+    // Сбросить трекинг уведомлений — expiry checker пересчитает по новому сроку
+    resetExpiryTracking(rentalId);
+  }
 
-  const netMinutes = Math.max(0, minutes - overdueMinutes);
   await audit.log(userId, 'Rental', rentalId, AuditAction.EXTENDED, {
     addedMinutes: minutes,
     extensionCost: cost,
@@ -475,13 +468,13 @@ export async function closeOverdue(rentalId: number, userId: number) {
       data: {
         extraMinutes: newExtra,
         extraCost: { increment: overdueCost },
-        status: RentalStatus.RENTED,
+        status: RentalStatus.RETURNED,
       },
     });
 
     await tx.board.update({
       where: { id: rental.boardId },
-      data: { status: BoardStatus.RENTED },
+      data: { status: BoardStatus.AVAILABLE },
     });
 
     return { updated, closedMinutes: overdue, overdueCost, newExtra };
@@ -661,8 +654,11 @@ export async function cancelRental(rentalId: number, userId: number, requireOwne
   return updated;
 }
 
-/** Generate a full rental receipt/summary */
-export async function getRentalReceipt(rentalId: number): Promise<string> {
+/**
+ * Чек аренды.
+ * @param overdueBilled — сумма просрочки, выставленная к оплате (0 = просрочка списана/не выставлена)
+ */
+export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Promise<string> {
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
     include: { board: true, tariff: true, user: true, seller: true },
@@ -720,25 +716,24 @@ export async function getRentalReceipt(rentalId: number): Promise<string> {
     }
   }
 
-  // Cost breakdown — overdue at flat rate
-  const overdueCost = overdueAtReturn * OVERDUE_RATE_PER_MIN;
-  const totalCost = basePrice + extraCost + overdueCost;
-  const paidAmount = basePrice + extraCost;
+  // Cost breakdown
+  const totalCost = basePrice + extraCost + overdueBilled;
 
   text += `\n<b>💰 Стоимость:</b>\n`;
   text += `   Тариф: ${fmtPrice(basePrice)}\n`;
   if (extraCost > 0) {
     text += `   Доплаты (продления): +${fmtPrice(extraCost)}\n`;
   }
-  if (overdueCost > 0) {
-    text += `   ⚠️ Просрочка: +${fmtPrice(overdueCost)}\n`;
+  if (overdueBilled > 0) {
+    text += `   ⚠️ Просрочка: +${fmtPrice(overdueBilled)}\n`;
   }
   text += `   ─────────────\n`;
   text += `   <b>Итого: ${fmtPrice(totalCost)}</b>\n`;
 
-  if (overdueCost > 0) {
+  if (overdueBilled > 0) {
+    const paidAmount = basePrice + extraCost;
     text += `\n   ✅ Оплачено: ${fmtPrice(paidAmount)}\n`;
-    text += `   💳 <b>К оплате: ${fmtPrice(overdueCost)}</b>\n`;
+    text += `   💳 <b>К оплате: ${fmtPrice(overdueBilled)}</b>\n`;
   }
 
   return text;

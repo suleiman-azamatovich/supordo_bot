@@ -17,6 +17,14 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { mainMenuKeyboard } from "../../ui/keyboards";
 import { handleRentalByQR } from "./helpers";
+import { isTestMode } from "../../services/rental";
+
+/** Строка режима работы для админа/кассира */
+async function modeLabel(role: string): Promise<string> {
+  if (role !== "ADMIN" && role !== "CASHIER") return "";
+  const test = await isTestMode();
+  return `\n⚙️ Режим: <b>${test ? "🧪 Тестовый" : "🟢 Рабочий"}</b>`;
+}
 
 export const startHandlers = new Composer<BotContext>();
 
@@ -32,9 +40,10 @@ startHandlers.command("start", async (ctx) => {
 
   const role = ctx.dbUser?.role ?? "CLIENT";
   const name = ctx.dbUser?.name ?? "друг";
+  const mode = await modeLabel(role);
 
   const sent = await ctx.reply(
-    `👋 Привет, <b>${name}</b>!\n\nДобро пожаловать в SUP-аренду.`,
+    `👋 Привет, <b>${name}</b>!\n\nДобро пожаловать в SUP-аренду.${mode}`,
     { parse_mode: "HTML", reply_markup: mainMenuKeyboard(role) }
   );
   ctx.session.lastBotMsgIds = [sent.message_id];
@@ -43,7 +52,8 @@ startHandlers.command("start", async (ctx) => {
 /** /menu — показ главного меню */
 startHandlers.command("menu", async (ctx) => {
   const role = ctx.dbUser?.role ?? "CLIENT";
-  const sent = await ctx.reply("📋 <b>Главное меню</b>", {
+  const mode = await modeLabel(role);
+  const sent = await ctx.reply(`📋 <b>Главное меню</b>${mode}`, {
     parse_mode: "HTML",
     reply_markup: mainMenuKeyboard(role),
   });
@@ -58,12 +68,11 @@ startHandlers.callbackQuery("client:qr_hint", async (ctx) => {
     "1. Откройте камеру телефона\n" +
     "2. Наведите на QR-код на доске\n" +
     "3. Перейдите по ссылке — бот откроется автоматически\n" +
-    "4. Выберите тариф и оплатите\n\n" +
-    "Или введите код вручную (например, <code>SUP-05</code>).",
+    "4. Выберите тариф и оплатите",
     {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("🔤 Ввести код доски", "client:enter_code")
+        .text("🏄 Арендовать доску", "client:boards")
         .row()
         .text("⬅️ Меню", "back:menu"),
     }
@@ -85,7 +94,7 @@ startHandlers.callbackQuery("client:enter_code", async (ctx) => {
 
 /** Кнопка «Меню» — возврат в главное меню (используется всеми ролями) */
 startHandlers.callbackQuery("back:menu", async (ctx) => {
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery().catch(() => {});
   const role = ctx.dbUser?.role ?? "CLIENT";
   ctx.session.waitingBoardCode = false;
   ctx.session.walkin = undefined;
@@ -97,10 +106,19 @@ startHandlers.callbackQuery("back:menu", async (ctx) => {
   ctx.session.chatProofId = undefined;
   ctx.session.chatRentalId = undefined;
   ctx.session.waitingMBankQR = false;
-  await ctx.editMessageText("📋 <b>Главное меню</b>", {
-    parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(role),
-  });
+  const mode = await modeLabel(role);
+  try {
+    await ctx.editMessageText(`📋 <b>Главное меню</b>${mode}`, {
+      parse_mode: "HTML",
+      reply_markup: mainMenuKeyboard(role),
+    });
+  } catch {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    await ctx.reply(`📋 <b>Главное меню</b>${mode}`, {
+      parse_mode: "HTML",
+      reply_markup: mainMenuKeyboard(role),
+    });
+  }
 });
 
 /**
@@ -108,7 +126,6 @@ startHandlers.callbackQuery("back:menu", async (ctx) => {
  * а также пытается удалить близлежащие неотслеживаемые сообщения.
  */
 startHandlers.callbackQuery("clear:chat", async (ctx) => {
-  await ctx.answerCallbackQuery();
   const chatId = ctx.chat!.id;
   const ids = ctx.session.lastBotMsgIds ?? [];
   const sourceId = ctx.callbackQuery?.message?.message_id;
@@ -123,8 +140,13 @@ startHandlers.callbackQuery("clear:chat", async (ctx) => {
   // Пытаемся удалить близлежащие неотслеживаемые сообщения (уведомления и т.п.)
   if (sourceId) {
     const untrackedIds: number[] = [];
+    // Назад от текущего сообщения
     for (let id = sourceId - 1; id > sourceId - 200 && id > 0; id--) {
       if (!ids.includes(id)) untrackedIds.push(id);
+    }
+    // Вперёд от текущего сообщения (уведомления, пришедшие позже)
+    for (let id = sourceId + 1; id <= sourceId + 50; id++) {
+      untrackedIds.push(id);
     }
     for (let i = 0; i < untrackedIds.length; i += 100) {
       const chunk = untrackedIds.slice(i, i + 100);
@@ -132,10 +154,6 @@ startHandlers.callbackQuery("clear:chat", async (ctx) => {
     }
   }
 
-  const role = ctx.dbUser?.role ?? "CLIENT";
   ctx.session.lastBotMsgIds = sourceId ? [sourceId] : [];
-  await ctx.editMessageText("📋 <b>Главное меню</b>\n\n✅ Чат очищен.", {
-    parse_mode: "HTML",
-    reply_markup: mainMenuKeyboard(role),
-  });
+  await ctx.answerCallbackQuery({ text: "🧹 Лишнее убрано!", show_alert: false });
 });

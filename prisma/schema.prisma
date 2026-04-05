@@ -11,6 +11,7 @@ enum Role {
   CLIENT
   SELLER
   ADMIN
+  CASHIER
 }
 
 enum BoardStatus {
@@ -49,6 +50,7 @@ enum PaymentProofKind {
   BOOKING
   RENTAL
   OVERDUE
+  EXTENSION
 }
 
 enum AuditAction {

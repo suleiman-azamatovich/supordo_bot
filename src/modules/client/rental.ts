@@ -72,9 +72,8 @@ rentalHandlers.callbackQuery(/^rent:pick_tariff:(\d+):(\d+)$/, async (ctx) => {
  *
  * 1. Создаёт аренду (атомарная транзакция в сервисе)
  * 2. Переводит в статус WAIT_PAYMENT
- * 3. Автоматически создаёт запись об оплате (submitPayment)
- * 4. Отправляет QR-код MBank
- * 5. Уведомляет всех админов
+ * 3. Отправляет QR-код MBank с кнопкой «Я оплатил»
+ * 4. После нажатия «Я оплатил» → submitPayment + уведомление админам
  */
 rentalHandlers.callbackQuery(/^rent:accept_safety:(\d+):(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -106,31 +105,95 @@ rentalHandlers.callbackQuery(/^rent:accept_safety:(\d+):(\d+)$/, async (ctx) => 
 
   await rentalService.moveToWaitPayment(rental.id, ctx.dbUser!.id);
 
-  const { proof } = await rentalService.submitPayment({
-    rentalId: rental.id,
-    userId: ctx.dbUser!.id,
-    amount: tariff.price,
-  });
-
-  const kb = new InlineKeyboard()
-    .text("❌ Отмена", `rent:cancel:${rental.id}`)
-    .row()
-    .text("⬅️ Меню", "back:menu");
-
   await ctx.editMessageText(
     `📋 <b>Аренда #${rental.id}</b>\n\n` +
     `🏄 Доска: ${board.code}\n` +
     `📍 Точка: ${board.spot.name}\n` +
     `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})\n` +
     `💰 Сумма: <b>${fmtPrice(tariff.price)}</b>\n\n` +
-    `💳 <b>Оплата через MBank:</b>\n` +
-    `Переведите <b>${fmtPrice(tariff.price)}</b> по QR-коду ниже.\n` +
-    `Заявка отправлена администратору. После подтверждения оплаты вам придёт уведомление.`,
-    { parse_mode: "HTML", reply_markup: kb }
+    `💳 Оплатите по QR-коду ниже через MBank.\n` +
+    `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
+    { parse_mode: "HTML" }
   );
 
-  await sendMBankQR(ctx, tariff.price);
-  await notifyAdminsNewPayment(ctx, proof.id);
+  await sendMBankQR(ctx, tariff.price, rental.id);
+});
+
+/**
+ * Клиент нажал «Я оплатил» → создаём/находим запись об оплате и уведомляем админов.
+ *
+ * Работает для двух сценариев:
+ *  - Первичная оплата аренды (WAIT_PAYMENT) → submitPayment + уведомление
+ *  - Оплата просрочки (WAIT_RETURN) → proof уже создан → только уведомление
+ */
+rentalHandlers.callbackQuery(/^rent:paid:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUnique({
+    where: { id: rentalId },
+    include: { board: true, spot: true, tariff: true },
+  });
+
+  if (!rental || rental.userId !== ctx.dbUser!.id) {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    return ctx.reply("⚠️ Аренда не найдена.");
+  }
+
+  let proofId: number;
+
+  if (rental.status === "WAIT_PAYMENT") {
+    const { proof } = await rentalService.submitPayment({
+      rentalId: rental.id,
+      userId: ctx.dbUser!.id,
+      amount: rental.tariff!.price,
+    });
+    proofId = proof.id;
+  } else if (rental.status === "WAIT_RETURN" || rental.status === "RETURNED") {
+    const existingProof = await prisma.paymentProof.findFirst({
+      where: { kind: "OVERDUE", refId: rentalId, status: "SUBMITTED" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!existingProof) {
+      try { await ctx.deleteMessage(); } catch { /* ignore */ }
+      return ctx.reply("⚠️ Заявка на оплату просрочки не найдена.", {
+        reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+      });
+    }
+    proofId = existingProof.id;
+  } else {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    return ctx.reply("⚠️ Оплата уже была отправлена или аренда отменена.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
+  }
+
+  const amount = rental.tariff ? fmtPrice(rental.tariff.price) : "—";
+
+  try { await ctx.deleteMessage(); } catch { /* ignore */ }
+  await ctx.reply(
+    `✅ <b>Заявка на оплату отправлена!</b>\n\n` +
+    `📋 Аренда #${rental.id}\n` +
+    `🏄 Доска: ${rental.board.code}\n` +
+    `💰 Сумма: <b>${amount}</b>\n\n` +
+    `⏳ Ожидайте подтверждения от администратора.\n` +
+    `Вам придёт уведомление, когда оплата будет подтверждена.`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("⬅️ Меню", "back:menu"),
+    }
+  );
+
+  // Уведомление клиенту в колокольчик
+  await prisma.notification.create({
+    data: {
+      userId: ctx.dbUser!.id,
+      text: `💳 Оплата #${proofId} отправлена на проверку — ${rental.board.code}`,
+    },
+  });
+
+  await notifyAdminsNewPayment(ctx, proofId);
 });
 
 /**
@@ -191,10 +254,15 @@ rentalHandlers.callbackQuery(/^rent:cancel:(\d+)$/, async (ctx) => {
   const rentalId = parseInt(ctx.match[1]);
   try {
     await rentalService.cancelRental(rentalId, ctx.dbUser!.id, true);
-    await ctx.editMessageText("❌ Аренда отменена.", {
+    // Удаляем сообщение (может быть фото с QR) и отправляем новое
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    await ctx.reply("❌ Аренда отменена.", {
       reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
     });
   } catch (e: any) {
-    await ctx.editMessageText(`⚠️ ${e.message}`);
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    await ctx.reply(`⚠️ ${e.message}`, {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
   }
 });

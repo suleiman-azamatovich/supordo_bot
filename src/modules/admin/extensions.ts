@@ -55,36 +55,47 @@ extensionsHandlers.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
     const extensionCost = extensionTariff?.price ?? 0;
 
     const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionCost);
-    const totalMin = (rental.tariff?.durationMinutes ?? 0) + (rental.extraMinutes ?? 0) + minutes;
     const client = escapeHtml(rental.clientName ?? rental.user.name);
 
     let msg = `✅ Продление подтверждено!\n\n`;
     msg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
     msg += `👤 Клиент: <b>${client}</b>\n`;
-    msg += `⏱ +${fmtDuration(minutes)} — ${fmtPrice(extensionCost)}\n`;
+    msg += `⏱ Продление: <b>+${fmtDuration(minutes)}</b> — ${fmtPrice(extensionCost)}\n`;
     if (result.overdueMinutes > 0) {
-      msg += `⚠️ Покрыто просрочки: <b>${fmtDuration(result.overdueMinutes)}</b>\n`;
-      msg += `✅ Чистое время: <b>${fmtDuration(result.netMinutes)}</b>\n`;
+      msg += `⚠️ Просрочка: <b>${fmtDuration(result.overdueMinutes)}</b> (вычтена)\n`;
+      if (result.netMinutes > 0) {
+        msg += `✅ Добавлено время: <b>+${fmtDuration(result.netMinutes)}</b>\n`;
+      } else {
+        msg += `ℹ️ Всё продление ушло на просрочку — клиент всё ещё должен вернуть доску\n`;
+      }
     }
-    msg += `Общая длительность: <b>${fmtDuration(totalMin)}</b>`;
 
     await ctx.editMessageText(msg, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
         .text("🔄 Возвраты", "admin:returns")
-        .text("📋 Панель", "admin:dashboard")
         .row()
         .text("⬅️ Меню", "back:menu"),
     });
 
     // Уведомление клиенту
-    let clientMsg = `✅ Продление подтверждено!\n\n`;
+    let clientMsg = `✅ <b>Продление подтверждено!</b>\n\n`;
     clientMsg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
-    clientMsg += `⏱ +<b>${fmtDuration(minutes)}</b> — ${fmtPrice(extensionCost)}\n`;
+    clientMsg += `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n`;
+    clientMsg += `💰 Оплачено: <b>${fmtPrice(extensionCost)}</b>\n`;
     if (result.overdueMinutes > 0) {
-      clientMsg += `⚠️ Из них покрыто просрочки: ${fmtDuration(result.overdueMinutes)}\n`;
+      clientMsg += `\n⚠️ У вас была просрочка <b>${fmtDuration(result.overdueMinutes)}</b> — `;
+      clientMsg += `она вычтена из продления.\n`;
+      if (result.netMinutes > 0) {
+        clientMsg += `✅ Вам добавлено: <b>+${fmtDuration(result.netMinutes)}</b>\n`;
+      } else {
+        clientMsg += `ℹ️ Всё время продления ушло на покрытие просрочки.\n`;
+        clientMsg += `Пожалуйста, верните доску или продлите ещё.\n`;
+      }
     }
-    clientMsg += `Общая длительность: <b>${fmtDuration(totalMin)}</b>. Приятного катания! 🌊`;
+    if (result.netMinutes > 0) {
+      clientMsg += `\nПриятного катания! 🌊`;
+    }
     await notify(ctx.api, rental.user.tgId, clientMsg);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`);
@@ -191,7 +202,7 @@ extensionsHandlers.callbackQuery(/^admin:extend:(\d+)$/, async (ctx) => {
 
   const kb = new InlineKeyboard();
   if (overdue > 0) {
-    kb.text(`🔄 Закрыть просрочку (${fmtDuration(overdue)})`, `admin:close_overdue:${rentalId}`).row();
+    kb.text(`✅ Принять доску`, `return:confirm:${rentalId}`).row();
   }
   for (const t of tariffs) {
     const net = overdue > 0 ? Math.max(0, t.durationMinutes - overdue) : t.durationMinutes;
@@ -203,56 +214,6 @@ extensionsHandlers.callbackQuery(/^admin:extend:(\d+)$/, async (ctx) => {
   kb.text("⬅️ Назад", `admin:board_detail:${rental.boardId}`).text("⬅️ Меню", "back:menu");
 
   await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
-});
-
-/**
- * Закрытие просрочки без продления.
- *
- * Покрывает просрочку за доплату, но не даёт дополнительного времени.
- * Аренда возвращается в статус RENTED.
- */
-extensionsHandlers.callbackQuery(/^admin:close_overdue:(\d+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const rentalId = parseInt(ctx.match[1]);
-
-  try {
-    const result = await rentalService.closeOverdue(rentalId, ctx.dbUser!.id);
-    const rental = await prisma.rental.findUniqueOrThrow({
-      where: { id: rentalId },
-      include: { board: true, user: true, tariff: true },
-    });
-    const client = escapeHtml(rental.clientName ?? rental.user.name);
-
-    await ctx.editMessageText(
-      `✅ Просрочка закрыта!\n\n` +
-      `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `👤 Клиент: <b>${client}</b>\n` +
-      `⏱ Покрыто: <b>${fmtDuration(result.closedMinutes)}</b>\n` +
-      `💰 Доплата: <b>${fmtPrice(result.overdueCost)}</b>\n` +
-      `Аренда снова активна (без дополнительного времени).`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("⏱ Продлить", `admin:extend:${rentalId}`)
-          .row()
-          .text("🔄 Возвраты", "admin:returns")
-          .text("🏄 Доски", "admin:boards")
-          .row()
-          .text("⬅️ Меню", "back:menu"),
-      }
-    );
-
-    await notify(
-      ctx.api,
-      rental.user.tgId,
-      `⏱ Просрочка по доске <b>${rental.board.code}</b> закрыта.\n` +
-      `Покрыто: <b>${fmtDuration(result.closedMinutes)}</b>. Аренда продолжается.`
-    );
-  } catch (e: any) {
-    await ctx.editMessageText(`⚠️ ${e.message}`, {
-      reply_markup: new InlineKeyboard().text("⬅️ Назад", "admin:returns"),
-    });
-  }
 });
 
 /** Подтверждение продления от админа — мгновенное применение */
@@ -292,11 +253,23 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
         .text("⬅️ Меню", "back:menu"),
     });
 
-    let clientMsg = `⏱ Ваша аренда доски <b>${rental.board.code}</b> продлена на <b>${fmtDuration(minutes)}</b> (${fmtPrice(extensionTariff.price)})!\n`;
+    let clientMsg = `✅ <b>Продление подтверждено!</b>\n\n`;
+    clientMsg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
+    clientMsg += `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n`;
+    clientMsg += `💰 Стоимость: <b>${fmtPrice(extensionTariff.price)}</b>\n`;
     if (result.overdueMinutes > 0) {
-      clientMsg += `⚠️ Из них покрыто просрочки: ${fmtDuration(result.overdueMinutes)}\n`;
+      clientMsg += `\n⚠️ У вас была просрочка <b>${fmtDuration(result.overdueMinutes)}</b> — `;
+      clientMsg += `она вычтена из продления.\n`;
+      if (result.netMinutes > 0) {
+        clientMsg += `✅ Вам добавлено: <b>+${fmtDuration(result.netMinutes)}</b>\n`;
+      } else {
+        clientMsg += `ℹ️ Всё время продления ушло на покрытие просрочки.\n`;
+        clientMsg += `Пожалуйста, верните доску или продлите ещё.\n`;
+      }
     }
-    clientMsg += `Общая длительность: <b>${fmtDuration(totalMin)}</b>. Приятного катания! 🌊`;
+    if (result.netMinutes > 0) {
+      clientMsg += `\nПриятного катания! 🌊`;
+    }
     await notify(ctx.api, rental.user.tgId, clientMsg);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`, {

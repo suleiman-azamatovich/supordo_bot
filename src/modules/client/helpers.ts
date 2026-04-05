@@ -28,8 +28,8 @@ const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "mbank_q
  * Проверяет доступность доски и показывает список тарифов.
  */
 export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
-  if (ctx.dbUser?.role === "ADMIN") {
-    return ctx.reply("⛔ Администратор не может арендовать доски.");
+  if (ctx.dbUser?.role === "ADMIN" || ctx.dbUser?.role === "CASHIER") {
+    return ctx.reply("⛔ Администратор и кассир не могут арендовать доски.");
   }
 
   const board = await prisma.board.findUnique({
@@ -104,6 +104,14 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     refText = rental
       ? `⏰ Просрочка по аренде #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
       : `Просрочка по аренде #${proof.refId}`;
+  } else if (proof.kind === "EXTENSION") {
+    const rental = await prisma.rental.findUnique({
+      where: { id: proof.refId },
+      include: { board: true, spot: true },
+    });
+    refText = rental
+      ? `⏱ Продление аренды #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
+      : `Продление аренды #${proof.refId}`;
   } else {
     refText = `Платёж #${proof.refId}`;
   }
@@ -112,37 +120,38 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     `💳 <b>Новая заявка на оплату #${proof.id}</b>\n\n` +
     `👤 ${proof.user.name} (tg: ${proof.user.tgId})\n` +
     `📋 ${refText}\n` +
-    `💰 Сумма: ${fmtPrice(proof.amount)}\n` +
-    `📎 Чек: ${proof.fileId ? "приложен" : "нет"}`;
+    `💰 Сумма: ${fmtPrice(proof.amount)}`;
 
   const kb = new InlineKeyboard()
-    .text("✅ Подтвердить", `pay:approve:${proof.id}`)
-    .text("❌ Отклонить", `pay:reject:${proof.id}`)
-    .row()
-    .text("💬 Запросить инфо", `pay:request_info:${proof.id}`);
+    .text("💰 Открыть кассу", "cashier:payments");
 
-  const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
-  await Promise.all(admins.map(async (admin) => {
+  const adminsAndCashiers = await prisma.user.findMany({
+    where: { role: { in: [Role.ADMIN, Role.CASHIER] } },
+  });
+  await Promise.all(adminsAndCashiers.map(async (user) => {
     await prisma.notification.create({
       data: {
-        userId: admin.id,
+        userId: user.id,
         text: `💳 Новая оплата #${proof.id} от ${proof.user.name} — ${fmtPrice(proof.amount)}`,
       },
     });
 
+    // Push-сообщение отправляем только кассирам, админам — только уведомление в колокольчик
+    if (user.role !== Role.CASHIER) return;
+
     try {
       proof.fileId
-        ? await ctx.api.sendPhoto(Number(admin.tgId), proof.fileId, {
+        ? await ctx.api.sendPhoto(Number(user.tgId), proof.fileId, {
           caption: text,
           parse_mode: "HTML",
           reply_markup: kb,
         })
-        : await ctx.api.sendMessage(Number(admin.tgId), text, {
+        : await ctx.api.sendMessage(Number(user.tgId), text, {
           parse_mode: "HTML",
           reply_markup: kb,
         });
     } catch (e) {
-      console.error(`Failed to notify admin ${admin.tgId}:`, e);
+      console.error(`Failed to notify user ${user.tgId}:`, e);
     }
   }));
 }
@@ -150,23 +159,38 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
 /**
  * Отправляет клиенту QR-код MBank для оплаты указанной суммы.
  *
- * Если файл QR-кода не найден на диске, отправляет текстовое сообщение
- * с просьбой обратиться к администрации за реквизитами.
+ * Под QR-кодом — кнопки «Я оплатил» и «Отмена».
+ * Если файл QR-кода не найден на диске, отправляет текстовое сообщение.
+ *
+ * @param kind — 'rental' (по умолчанию) или 'extension' — определяет callback-prefix
  */
-export async function sendMBankQR(ctx: BotContext, amount: number) {
+export async function sendMBankQR(ctx: BotContext, amount: number, rentalId: number, kind: "rental" | "extension" = "rental") {
+  const paidCb = kind === "extension" ? `ext:paid:${rentalId}` : `rent:paid:${rentalId}`;
+  const cancelCb = kind === "extension" ? `client:my_detail:${rentalId}` : `rent:cancel:${rentalId}`;
+
+  const kb = new InlineKeyboard()
+    .text("✅ Я оплатил", paidCb)
+    .row()
+    .text("❌ Отмена", cancelCb)
+    .text("⬅️ Меню", "back:menu");
+
   try {
     await ctx.replyWithPhoto(new InputFile(MBANK_QR_PATH), {
       caption:
-        `💳 <b>Оплата через MBank</b>\n\n` +
-        `Отсканируйте QR-код в приложении MBank и переведите <b>${fmtPrice(amount)}</b>.\n` +
-        `После перевода администратор подтвердит оплату.`,
+        `💳 <b>Оплата: ${fmtPrice(amount)}</b>\n\n` +
+        `📱 Отсканируйте QR-код через <b>любой мобильный банкинг</b> (MBank, O!, Бакай и др.)\n` +
+        `💵 Или оплатите <b>наличными</b> на точке проката.\n\n` +
+        `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
       parse_mode: "HTML",
+      reply_markup: kb,
     });
   } catch (e) {
-    console.error("Failed to send MBank QR:", e);
+    console.error("[helpers] Failed to send MBank QR:", e);
     await ctx.reply(
-      `💳 Переведите <b>${fmtPrice(amount)}</b> через MBank. Обратитесь к администрации за реквизитами.`,
-      { parse_mode: "HTML" }
+      `💳 К оплате: <b>${fmtPrice(amount)}</b>\n\n` +
+      `📱 Оплатите через <b>мобильный банкинг</b> или 💵 <b>наличными</b> на точке.\n` +
+      `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
+      { parse_mode: "HTML", reply_markup: kb }
     );
   }
 }

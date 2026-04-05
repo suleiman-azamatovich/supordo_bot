@@ -162,7 +162,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
   }
 
   // 3. Ручной ввод кода доски
-  if (!ctx.session.waitingBoardCode) return;
+  if (!ctx.session.waitingBoardCode) return next();
 
   const code = ctx.message.text.trim().toUpperCase();
   ctx.session.waitingBoardCode = false;

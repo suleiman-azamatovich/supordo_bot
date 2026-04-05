@@ -9,15 +9,18 @@
  *
  * @module
  */
-import { Bot, session } from "grammy";
+import { Bot, session, Composer } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
 import { BotContext, SessionData } from "./bot/context";
 import { config } from "./bot/config";
-import { authMiddleware, chatCleanupMiddleware } from "./bot/middleware";
+import { authMiddleware, chatCleanupMiddleware, guardRole } from "./bot/middleware";
 import { clientModule } from "./modules/client/index";
 import { adminModule } from "./modules/admin/index";
+import { cashierModule } from "./modules/cashier/index";
+import { paymentActionsHandlers } from "./modules/shared/payment-actions";
 import { startExpiryChecker } from "./services/expiry";
 import { prisma } from "./db/prisma";
+import { Role } from "@prisma/client";
 
 async function main() {
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
@@ -45,6 +48,14 @@ async function main() {
 
   // Register modules
   bot.use(clientModule);
+
+  // Общие обработчики оплаты (доступны ADMIN и CASHIER)
+  const paymentActionsGuarded = new Composer<BotContext>();
+  paymentActionsGuarded.use(guardRole(Role.ADMIN, Role.CASHIER));
+  paymentActionsGuarded.use(paymentActionsHandlers);
+  bot.use(paymentActionsGuarded);
+
+  bot.use(cashierModule);
   bot.use(adminModule);
 
   // Set bot commands
@@ -54,6 +65,11 @@ async function main() {
   ]);
 
   console.log("🚀 Bot starting...");
+
+  // Определяем текущий режим
+  const testMode = await (await import("./services/rental")).isTestMode();
+  console.log(`⚙️ Режим: ${testMode ? "🧪 ТЕСТОВЫЙ" : "🟢 РАБОЧИЙ"}`);
+
   // Запуск автоматического завершения истёкших аренд
   startExpiryChecker(bot.api);
 

@@ -6,25 +6,33 @@ import { Role } from "@prisma/client";
  *
  * Кнопки зависят от роли пользователя:
  * - CLIENT: доски, мои аренды, уведомления, помощь
- * - ADMIN: уведомления, доски, панель управления, выдача доски, отчёты
+ * - ADMIN: уведомления, доски, проверка оплат, история транзакций, отчёты, переключение режима
+ * - CASHIER: проверка оплат, уведомления
+ *
  */
 export function mainMenuKeyboard(role: Role): InlineKeyboard {
   const kb = new InlineKeyboard();
 
   if (role === Role.CLIENT) {
-    kb.text("🏄 Доски", "client:boards").row();
-    kb.text("📋 Мои аренды", "client:my_list").text("🔔 Уведомления", "client:notifications").row();
-    kb.text("❓ Помощь", "client:help").row();
+    kb.text("🏄 Арендовать доску", "client:boards").row();
+    kb.text("📋 Мои аренды", "client:my_list").text("📜 История операций", "client:my_history").row();
+    kb.text("🔔 Уведомления", "client:notifications").text("❓ Помощь", "client:help").row();
+  }
+
+  if (role === Role.CASHIER) {
+    kb.text("✅ Проверка оплат", "cashier:payments").row();
+    kb.text("🔔 Уведомления", "cashier:notifications").row();
   }
 
   if (role === Role.ADMIN) {
     kb.text("🔔 Уведомления", "admin:notifications").text("🏄 Доски", "admin:boards").row();
-    kb.text("📊 Панель управления", "admin:dashboard").row();
-    kb.text("➕ Выдать доску клиенту", "seller:walkin").row();
+    kb.text("✅ Проверка оплат", "admin:cashbox").row();
+    kb.text("📜 История транзакций", "admin:transactions").row();
     kb.text("📊 Отчёты", "admin:reports").row();
+    kb.text("⚙️ Режим", "admin:mode").row();
   }
 
-  kb.text("🗑 Очистить чат", "clear:chat").row();
+  kb.text("🧹 Убрать лишнее", "clear:chat").row();
 
   return kb;
 }

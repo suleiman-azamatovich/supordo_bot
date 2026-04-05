@@ -33,6 +33,12 @@ export interface SessionData {
   chatReplyRentalId?: number;
   /** tracked bot message IDs for auto-cleanup */
   lastBotMsgIds?: number[];
+  /** tracked cashier payment message IDs (individual cards) */
+  cashierMsgIds?: number[];
+  /** ID чека, для которого ожидается ввод причины отклонения */
+  rejectProofId?: number;
+  /** ID аренды, для которой админ пишет сообщение клиенту */
+  boardMsgRentalId?: number;
 }
 
 export type BotContext = Context &

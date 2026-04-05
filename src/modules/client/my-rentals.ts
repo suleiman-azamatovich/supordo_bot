@@ -1,14 +1,13 @@
-/**
- * Мои аренды — список, продление, просрочка.
+﻿/**
+ * Мои аренды — список досок-кнопок, детальная карточка, продление.
  *
  * Обрабатывает:
- *  - client:my_list — список всех аренд клиента с пагинацией
- *  - client:close_overdue — запрос на закрытие просрочки (оплата через MBank)
+ *  - client:my_list — кнопки «мои доски» (аналог списка досок)
+ *  - client:my_detail — детальная карточка аренды
  *  - client:extend — выбор тарифа для продления
  *  - client:extend_confirm — отправка запроса на продление админу
  *
- * Каждая аренда показывает статус, оставшееся время, просрочку,
- * ожидающие запросы на продление и итоговый чек.
+ * «Закрыть просрочку» убрана — просрочка решается продлением или возвратом на берегу.
  */
 
 import { Composer, InlineKeyboard } from "grammy";
@@ -21,155 +20,336 @@ import { sendMBankQR, notifyAdminsNewPayment } from "./helpers";
 
 export const myRentalsHandlers = new Composer<BotContext>();
 
-/** Словарь статусов аренды → человекочитаемые подписи */
-const rentalStatusLabel: Record<string, string> = {
-  CREATED: "⏳ Создана",
-  WAIT_PAYMENT: "💳 Ожидает оплаты",
-  WAIT_ADMIN: "🔍 Проверка оплаты",
-  RENTED: "🏄 В аренде",
-  WAIT_RETURN: "⏰ Верните доску!",
-  RETURNED: "✅ Завершена",
-  CANCELLED: "❌ Отменена",
-};
+/** Иконка статуса аренды */
+function rentalIcon(status: string): string {
+  switch (status) {
+    case "CREATED":
+    case "WAIT_PAYMENT":
+    case "WAIT_ADMIN": return "💳";
+    case "RENTED": return "🏄";
+    case "WAIT_RETURN": return "⏰";
+    case "RETURNED": return "✅";
+    case "CANCELLED": return "❌";
+    default: return "📋";
+  }
+}
 
-/** Список всех аренд клиента с пагинацией и кнопками действий */
+/** Краткая подпись статуса */
+function rentalLabel(status: string): string {
+  switch (status) {
+    case "CREATED": return "создана";
+    case "WAIT_PAYMENT": return "ожидает оплаты";
+    case "WAIT_ADMIN": return "проверка оплаты";
+    case "RENTED": return "в аренде";
+    case "WAIT_RETURN": return "верните доску!";
+    case "RETURNED": return "завершена";
+    case "CANCELLED": return "отменена";
+    default: return status;
+  }
+}
+
+/** Список моих аренд — только активные, кнопки-доски */
 myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery().catch(() => { });
   const page = parseInt(ctx.match?.[2] ?? "1");
-
   const userId = ctx.dbUser!.id;
 
   const rentals = await prisma.rental.findMany({
-    where: { userId },
-    include: { board: true, spot: true, tariff: true },
+    where: {
+      userId,
+      status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] },
+    },
+    include: { board: true, tariff: true },
     orderBy: { createdAt: "desc" },
   });
 
-  const paged = paginate(rentals, page, 5);
+  const paged = paginate(rentals, page, 6);
 
-  let text = "📋 <b>Мои аренды</b>\n\n";
-  if (paged.items.length === 0) {
-    text += "У вас пока нет аренд.";
-  } else {
-    for (const r of paged.items) {
-      const status = rentalStatusLabel[r.status] ?? r.status;
-      const price = r.tariff ? fmtPrice(r.tariff.price) : "—";
-      const duration = r.tariff ? fmtDuration(r.tariff.durationMinutes) : "—";
-
-      text += `<b>${r.board.code}</b>  ${status}\n`;
-      text += `   💰 ${price}  ·  ⏱ ${duration}\n`;
-
-      if (r.startAt) {
-        text += `   📅 ${fmtDate(r.startAt)}\n`;
-      }
-
-      // Оставшееся время для активных аренд
-      if (
-        r.startAt &&
-        r.tariff &&
-        ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED"].includes(r.status)
-      ) {
-        const totalMin = r.tariff.durationMinutes + (r.extraMinutes ?? 0);
-        const expiresAt = new Date(r.startAt.getTime() + totalMin * 60_000);
-        const remainMs = expiresAt.getTime() - Date.now();
-        if (remainMs > 0) {
-          const mins = Math.floor(remainMs / 60_000);
-          const secs = Math.floor((remainMs % 60_000) / 1_000);
-          text += `   ⏳ Осталось: ${mins} мин ${secs} сек\n`;
-        } else {
-          text += `   ⏰ Время истекло\n`;
-        }
-      }
-
-      if (r.status === "WAIT_RETURN") {
-        const overdue = await rentalService.getOverdueMinutes(r);
-        if (overdue > 0) {
-          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
-          text += `   ⚠️ Просрочка: ${fmtDuration(overdue)} — <b>${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
-        } else {
-          const graceMs = await rentalService.getEndGraceMs();
-          const graceLabel = graceMs >= 60_000 ? `${Math.round(graceMs / 60_000)} мин` : `${Math.round(graceMs / 1_000)} сек`;
-          text += `   ⏰ Время истекло — грейс ${graceLabel}, верните доску\n`;
-        }
-      }
-
-      if (r.pendingExtraMinutes) {
-        text += `   ⏳ Запрос продления: +${fmtDuration(r.pendingExtraMinutes)} (ожидает подтверждения)\n`;
-      }
-
-      if (r.endAt) {
-        text += `   🏁 Возврат: ${fmtDate(r.endAt)}\n`;
-      }
-
-      text += `\n`;
-    }
+  let text = `📋 <b>Мои аренды</b> (${rentals.length})\n`;
+  if (rentals.length === 0) {
+    text += "\nНет активных аренд.";
   }
 
   const kb = new InlineKeyboard();
   for (const r of paged.items) {
+    const icon = rentalIcon(r.status);
+    const label = rentalLabel(r.status);
+
+    let extra = "";
+    if (r.startAt && r.tariff && ["RENTED"].includes(r.status)) {
+      const totalMin = r.tariff.durationMinutes + (r.extraMinutes ?? 0);
+      const expiresAt = new Date(r.startAt.getTime() + totalMin * 60_000);
+      const remainMs = expiresAt.getTime() - Date.now();
+      if (remainMs > 0) {
+        const mins = Math.ceil(remainMs / 60_000);
+        extra = ` +${fmtDuration(mins)}`;
+      }
+    }
     if (r.status === "WAIT_RETURN") {
       const overdue = await rentalService.getOverdueMinutes(r);
       if (overdue > 0) {
-        const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
-        kb.text(`🔄 Закрыть просрочку ${r.board.code} (${fmtDuration(overdue)} — ${fmtPrice(cost)})`, `client:close_overdue:${r.id}`).row();
+        extra = ` −${fmtDuration(overdue)}`;
       }
     }
-    if ((r.status === "RENTED" || r.status === "WAIT_RETURN") && !r.pendingExtraMinutes) {
-      kb.text(`⏱ Продлить ${r.board.code}`, `client:extend:${r.id}`).row();
-    }
-  }
-  addPaginationRow(kb, paged.page, paged.totalPages, "client:my_list:");
-  kb.row().text("⬅️ Меню", "back:menu");
 
-  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+    kb.text(`${icon} ${r.board.code} — ${label}${extra}`, `client:my_detail:${r.id}`).row();
+  }
+
+  addPaginationRow(kb, paged.page, paged.totalPages, "client:my_list:");
+  kb.row().text("🔄 Обновить", `client:my_list:${paged.page}`).text("⬅️ Меню", "back:menu"); kb.row().text("🧹 Убрать лишнее", "clear:chat");
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e: any) {
+    if (!e.description?.includes("message is not modified")) throw e;
+  }
 });
 
-/**
- * Запрос на закрытие просрочки.
- *
- * Создаёт запись об оплате просрочки, отправляет QR MBank
- * и уведомляет всех админов.
- */
-myRentalsHandlers.callbackQuery(/^client:close_overdue:(\d+)$/, async (ctx) => {
+/** История операций — все аренды клиента + оплаты */
+/** История операций — только оплаты (PaymentProof) */
+myRentalsHandlers.callbackQuery(/^client:my_history(:(\d+))?$/, async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => { });
+  const page = parseInt(ctx.match?.[2] ?? "1");
+  const userId = ctx.dbUser!.id;
+
+  const total = await prisma.paymentProof.count({ where: { userId } });
+  const pageSize = 6;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // desc-порядок для пагинации (первая страница = новейшие)
+  const payments = await prisma.paymentProof.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  });
+
+  // Загружаем связанные аренды для отображения доски
+  const refIds = [...new Set(payments.map(p => p.refId))];
+  const rentals = refIds.length > 0
+    ? await prisma.rental.findMany({
+      where: { id: { in: refIds } },
+      include: { board: true, tariff: true },
+    })
+    : [];
+  const rentalMap = new Map(rentals.map(r => [r.id, r]));
+
+  // Внутри страницы — новые внизу
+  const items = [...payments].reverse();
+
+  let text = `📜 <b>История операций</b> (${total})\n`;
+  if (items.length === 0) {
+    text += "\nПока нет операций.";
+  } else {
+    text += "\n";
+    for (const p of items) {
+      const rental = rentalMap.get(p.refId);
+      const boardCode = rental?.board?.code ?? "—";
+      const kindLabel = p.kind === "OVERDUE" ? "просрочка"
+        : p.kind === "EXTENSION" ? "продление"
+          : "аренда";
+      const tariffInfo = rental?.tariff
+        ? `${fmtDuration(rental.tariff.durationMinutes)}`
+        : "";
+      const date = fmtDate(p.createdAt);
+
+      let statusIcon: string, statusLabel: string;
+      if (p.status === "APPROVED") {
+        statusIcon = "✅";
+        statusLabel = "подтверждена";
+      } else if (p.status === "REJECTED") {
+        if (!p.reviewedBy) {
+          statusIcon = "🚫";
+          statusLabel = "отклонена автоматически";
+        } else {
+          statusIcon = "❌";
+          statusLabel = "отклонена";
+        }
+      } else {
+        statusIcon = "🔄";
+        statusLabel = "на проверке";
+      }
+
+      text += `${statusIcon} ${statusLabel}\n`;
+      text += `💰 <b>${fmtPrice(p.amount)}</b> — ${kindLabel}\n`;
+      text += `🏄 ${boardCode}`;
+      if (tariffInfo) text += ` · ⏱ ${tariffInfo}`;
+      text += ` · #${p.refId}\n`;
+      text += `📅 ${date}\n\n`;
+    }
+  }
+
+  const kb = new InlineKeyboard();
+  addPaginationRow(kb, page, totalPages, "client:my_history:");
+  kb.row().text("🔄 Обновить", `client:my_history:${page}`).text("⬅️ Меню", "back:menu");
+  kb.row().text("🧹 Убрать лишнее", "clear:chat");
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e: any) {
+    if (!e.description?.includes("message is not modified")) throw e;
+  }
+});
+
+/** Детальная карточка одной аренды */
+myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
 
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
-    include: { board: true, tariff: true },
+    include: { board: true, tariff: true, spot: true },
   });
 
   if (rental.userId !== ctx.dbUser!.id) {
     return ctx.editMessageText("⛔ Это не ваша аренда.");
   }
 
-  try {
-    const { proof, overdueCost, overdueMinutes } =
-      await rentalService.requestCloseOverdue(rentalId, ctx.dbUser!.id);
+  // Загружаем все оплаты по этой аренде
+  const payments = await prisma.paymentProof.findMany({
+    where: { refId: rentalId },
+    orderBy: { createdAt: "asc" },
+  });
 
-    await ctx.editMessageText(
-      `⏰ <b>Запрос на закрытие просрочки</b>\n\n` +
-      `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `⏱ Просрочка: <b>${fmtDuration(overdueMinutes)}</b>\n` +
-      `💰 К оплате: <b>${fmtPrice(overdueCost)}</b>\n\n` +
-      `Оплатите через MBank по QR-коду ниже.\n` +
-      `После подтверждения оплаты администратором просрочка будет закрыта.`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("📋 Мои аренды", "client:my_list")
-          .text("⬅️ Меню", "back:menu"),
-      }
-    );
+  const icon = rentalIcon(rental.status);
+  const label = rentalLabel(rental.status);
+  const tariffPrice = rental.tariff?.price ?? 0;
+  const tariffDuration = rental.tariff?.durationMinutes ?? 0;
 
-    await sendMBankQR(ctx, overdueCost);
-    await notifyAdminsNewPayment(ctx, proof.id);
-  } catch (e: any) {
-    await ctx.editMessageText(`⚠️ ${e.message}`, {
-      reply_markup: new InlineKeyboard().text("📋 Мои аренды", "client:my_list"),
-    });
+  let text = `${icon} <b>${rental.board.code}</b> — ${label}\n`;
+  text += `#${rental.id}\n\n`;
+
+  // Раздел: тариф
+  text += `📋 <b>Тариф</b>\n`;
+  text += `   💰 ${fmtPrice(tariffPrice)}  ·  ⏱ ${fmtDuration(tariffDuration)}\n`;
+  if (rental.spot) {
+    text += `   📍 ${rental.spot.name}\n`;
   }
+
+  // Продления
+  if (rental.extraMinutes) {
+    text += `   ➕ Продлено: +${fmtDuration(rental.extraMinutes)}`;
+    if (rental.extraCost) {
+      text += ` (${fmtPrice(rental.extraCost)})`;
+    }
+    text += `\n`;
+  }
+  text += `\n`;
+
+  // Раздел: время
+  text += `⏱ <b>Время</b>\n`;
+  if (rental.startAt) {
+    text += `   📅 Начало: ${fmtDate(rental.startAt)}\n`;
+  }
+
+  if (rental.startAt && rental.tariff) {
+    const totalMin = tariffDuration + (rental.extraMinutes ?? 0);
+    const expiresAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+
+    if (["RENTED"].includes(rental.status)) {
+      const remainMs = expiresAt.getTime() - Date.now();
+      if (remainMs > 0) {
+        const mins = Math.floor(remainMs / 60_000);
+        const secs = Math.floor((remainMs % 60_000) / 1_000);
+        text += `   ⏳ Осталось: <b>${mins} мин ${secs} сек</b>\n`;
+        text += `   🏁 Истекает: ${fmtDate(expiresAt)}\n`;
+      } else {
+        text += `   ⏰ Время истекло\n`;
+      }
+    } else if (!["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
+      text += `   🏁 Истекало: ${fmtDate(expiresAt)}\n`;
+    }
+  }
+
+  if (rental.endAt && ["RETURNED", "CANCELLED"].includes(rental.status)) {
+    text += `   🔚 Возврат: ${fmtDate(rental.endAt)}\n`;
+  }
+  text += `\n`;
+
+  // Просрочка
+  if (rental.status === "WAIT_RETURN") {
+    const overdue = await rentalService.getOverdueMinutes(rental);
+    if (overdue > 0) {
+      const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+      text += `⚠️ <b>Просрочка</b>\n`;
+      text += `   ⏰ ${fmtDuration(overdue)} — <b>${fmtPrice(cost)}</b>\n`;
+      text += `   📊 Тариф: ${rentalService.OVERDUE_RATE_PER_MIN} сом/мин\n\n`;
+      text += `💡 <i>Что можно сделать:</i>\n`;
+      text += `   • <b>Продлить</b> — время просрочки вычтется из продления, оплата только за разницу\n`;
+      text += `   • <b>Вернуть доску</b> — подойдите на берег, просрочка рассчитается при возврате\n\n`;
+    } else {
+      const graceMs = await rentalService.getEndGraceMs();
+      const graceLabel = graceMs >= 60_000 ? `${Math.round(graceMs / 60_000)} мин` : `${Math.round(graceMs / 1_000)} сек`;
+      text += `⏰ Время истекло — у вас ${graceLabel} на возврат без просрочки\n\n`;
+    }
+  }
+
+  // Раздел: оплата
+  text += `💳 <b>Оплата</b>\n`;
+
+  // Базовая стоимость
+  let totalPaid = 0;
+  let totalPending = 0;
+
+  for (const p of payments) {
+    const kindLabel = p.kind === "OVERDUE" ? "просрочка" : "аренда";
+    if (p.status === "APPROVED") {
+      totalPaid += p.amount;
+      text += `   ✅ ${fmtPrice(p.amount)} — ${kindLabel} (оплачено)\n`;
+    } else if (p.status === "SUBMITTED") {
+      totalPending += p.amount;
+      text += `   🔄 ${fmtPrice(p.amount)} — ${kindLabel} (на проверке)\n`;
+    } else if (p.status === "REJECTED") {
+      text += `   ❌ ${fmtPrice(p.amount)} — ${kindLabel} (отклонено)\n`;
+    }
+  }
+
+  if (payments.length === 0) {
+    if (["CREATED", "WAIT_PAYMENT"].includes(rental.status)) {
+      text += `   💤 Ожидает оплаты: <b>${fmtPrice(tariffPrice)}</b>\n`;
+    } else {
+      text += `   — нет данных об оплате\n`;
+    }
+  }
+
+  // Итого к оплате (если есть просрочка)
+  if (rental.status === "WAIT_RETURN") {
+    const overdue = await rentalService.getOverdueMinutes(rental);
+    if (overdue > 0) {
+      const overdueCost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+      const unpaidOverdue = overdueCost - payments
+        .filter(p => p.kind === "OVERDUE" && p.status === "APPROVED")
+        .reduce((sum, p) => sum + p.amount, 0);
+      if (unpaidOverdue > 0) {
+        text += `   ⚠️ К оплате за просрочку: <b>${fmtPrice(unpaidOverdue)}</b>\n`;
+      }
+    }
+  }
+
+  text += `\n`;
+
+  if (rental.pendingExtraMinutes) {
+    text += `\n⏳ <b>Запрос продления:</b> +${fmtDuration(rental.pendingExtraMinutes)} (ожидает подтверждения)\n`;
+  }
+
+  // Памятка для активной аренды
+  if (rental.status === "RENTED") {
+    text += `\n💡 <i>Вы можете продлить аренду, нажав кнопку ниже.</i>\n`;
+  }
+
+  // Кнопки действий
+  const kb = new InlineKeyboard();
+
+  // Продлить — для активных без pending запроса
+  if (["RENTED", "WAIT_RETURN"].includes(rental.status) && !rental.pendingExtraMinutes) {
+    kb.text("⏱ Продлить", `client:extend:${rental.id}`).row();
+  }
+
+  kb.text("⬅️ Мои аренды", "client:my_list").text("⬅️ Меню", "back:menu");
+
+  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
 });
+
+
 
 /** Выбор тарифа для продления аренды */
 myRentalsHandlers.callbackQuery(/^client:extend:(\d+)$/, async (ctx) => {
@@ -211,10 +391,10 @@ myRentalsHandlers.callbackQuery(/^client:extend:(\d+)$/, async (ctx) => {
 });
 
 /**
- * Подтверждение продления → отправка запроса админам.
+ * Подтверждение продления → отправка QR для оплаты.
  *
- * Записывает pendingExtraMinutes в аренду и рассылает всем админам
- * уведомление с кнопками «Подтвердить / Отклонить / Написать».
+ * Записывает pendingExtraMinutes в аренду и отправляет QR-код MBank.
+ * После оплаты клиент нажимает «Я оплатил» → создаётся PaymentProof(EXTENSION).
  */
 myRentalsHandlers.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -237,52 +417,107 @@ myRentalsHandlers.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ct
     await rentalService.requestExtend(rentalId, minutes, ctx.dbUser!.id);
 
     await ctx.editMessageText(
-      `⏳ <b>Запрос на продление отправлен</b>\n\n` +
+      `⏱ <b>Продление аренды</b>\n\n` +
       `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `⏱ Продление: <b>+${fmtDuration(minutes)}</b> — ${fmtPrice(extensionTariff.price)}\n\n` +
-      `Ожидайте подтверждения администратора.`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("📋 Мои аренды", "client:my_list")
-          .text("⬅️ Меню", "back:menu"),
-      }
+      `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n` +
+      `💰 Сумма: <b>${fmtPrice(extensionTariff.price)}</b>\n\n` +
+      `💳 Оплатите по QR-коду ниже через <b>мобильный банкинг</b> или 💵 <b>наличными</b> на точке.\n` +
+      `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
+      { parse_mode: "HTML" }
     );
 
-    // Уведомляем всех админов
-    const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
-    await Promise.all(admins.map(async (admin) => {
-      await prisma.notification.create({
-        data: {
-          userId: admin.id,
-          text: `⏱ Запрос продления: ${ctx.dbUser!.name} — ${rental.board.code} на +${fmtDuration(minutes)}`,
-        },
-      });
-
-      try {
-        await ctx.api.sendMessage(
-          Number(admin.tgId),
-          `⏱ <b>Запрос на продление</b>\n\n` +
-          `👤 Клиент: <b>${ctx.dbUser!.name}</b>\n` +
-          `🏄 Доска: <b>${rental.board.code}</b>\n` +
-          `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n\n` +
-          `Подтвердите или отклоните:`,
-          {
-            parse_mode: "HTML",
-            reply_markup: new InlineKeyboard()
-              .text("✅ Подтвердить", `ext:approve:${rentalId}`)
-              .text("❌ Отклонить", `ext:reject:${rentalId}`)
-              .row()
-              .text("💬 Написать клиенту", `ext:chat:${rentalId}`),
-          }
-        );
-      } catch (e) {
-        console.error(`Failed to notify admin ${admin.tgId}:`, e);
-      }
-    }));
+    await sendMBankQR(ctx, extensionTariff.price, rentalId, "extension");
   } catch (e: any) {
-    await ctx.editMessageText(`⚠️ ${e.message}`, {
+    await ctx.editMessageText(`⌛ ${e.message}`, {
       reply_markup: new InlineKeyboard().text("⬅️ Назад", "client:my_list"),
     });
   }
+});
+
+/**
+ * Клиент нажал «Я оплатил» за продление.
+ *
+ * Создаёт PaymentProof(EXTENSION) и уведомляет админов/кассиров.
+ */
+myRentalsHandlers.callbackQuery(/^ext:paid:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUnique({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+
+  if (!rental || rental.userId !== ctx.dbUser!.id) {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    return ctx.reply("⚠️ Аренда не найдена.");
+  }
+
+  if (!rental.pendingExtraMinutes) {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    return ctx.reply("⚠️ Нет активного запроса на продление.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
+  }
+
+  // Находим тариф с нужной длительностью для определения цены
+  const extensionTariff = await prisma.tariff.findFirst({
+    where: { spotId: rental.spotId, durationMinutes: rental.pendingExtraMinutes, isActive: true },
+  });
+
+  if (!extensionTariff) {
+    return ctx.reply("⚠️ Тариф не найден.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
+  }
+
+  // Идемпотентность — не создаём дубль (только среди ещё не обработанных)
+  const existing = await prisma.paymentProof.findFirst({
+    where: {
+      kind: "EXTENSION",
+      refId: rentalId,
+      status: "SUBMITTED",
+    },
+  });
+
+  let proofId: number;
+  if (existing) {
+    proofId = existing.id;
+  } else {
+    const proof = await prisma.paymentProof.create({
+      data: {
+        kind: "EXTENSION",
+        refId: rentalId,
+        amount: extensionTariff.price,
+        userId: ctx.dbUser!.id,
+      },
+    });
+    proofId = proof.id;
+  }
+
+  try { await ctx.deleteMessage(); } catch { /* ignore */ }
+
+  await ctx.reply(
+    `✅ <b>Оплата за продление отправлена на проверку</b>\n\n` +
+    `🏄 Доска: <b>${rental.board.code}</b>\n` +
+    `⏱ Продление: <b>+${fmtDuration(rental.pendingExtraMinutes)}</b>\n` +
+    `💰 Сумма: <b>${fmtPrice(extensionTariff.price)}</b>\n\n` +
+    `Ожидайте подтверждения.`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("📋 Мои аренды", "client:my_list")
+        .text("⬅️ Меню", "back:menu"),
+    }
+  );
+
+  // Уведомление клиенту в колокольчик
+  await prisma.notification.create({
+    data: {
+      userId: ctx.dbUser!.id,
+      text: `💳 Оплата за продление #${proofId} отправлена на проверку — ${rental.board.code}`,
+    },
+  });
+
+  await notifyAdminsNewPayment(ctx, proofId);
 });

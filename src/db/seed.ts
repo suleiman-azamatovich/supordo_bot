@@ -36,6 +36,26 @@ async function main() {
     console.log(`Admin user created/updated: id=${admin.id}, tgId=${admin.tgId}`);
   }
 
+  // Create or update cashier users (optional)
+  const cashierTgIds = (process.env.CASHIER_TG_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const cashierTgId of cashierTgIds) {
+    const cashier = await prisma.user.upsert({
+      where: { tgId: BigInt(cashierTgId) },
+      update: { role: Role.CASHIER, spotId: spot.id },
+      create: {
+        tgId: BigInt(cashierTgId),
+        role: Role.CASHIER,
+        name: "Cashier",
+        spotId: spot.id,
+      },
+    });
+    console.log(`Cashier user created/updated: id=${cashier.id}, tgId=${cashier.tgId}`);
+  }
+
   // Create 10 boards with permanent sequential codes SUP-01..SUP-10
   const boards = Array.from({ length: 10 }, (_, i) => ({
     code: `SUP-${String(i + 1).padStart(2, "0")}`,

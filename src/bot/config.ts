@@ -2,7 +2,7 @@
  * Конфигурация приложения из переменных окружения.
  *
  * Обязательные: BOT_TOKEN, DATABASE_URL.
- * Опциональные: ADMIN_TG_IDS, MBANK_QR_FILE_ID, LOG_LEVEL, TIMEZONE.
+ * Опциональные: ADMIN_TG_IDS, CASHIER_TG_IDS, MBANK_QR_FILE_ID, LOG_LEVEL, TIMEZONE.
  *
  * @module
  */
@@ -28,6 +28,18 @@ export const config = {
     .filter((s) => {
       if (!/^\d+$/.test(s)) {
         console.error(`[config] Некорректный ADMIN_TG_ID: "${s}" — ожидается числовой Telegram ID`);
+        return false;
+      }
+      return true;
+    }),
+  /** Comma-separated list of cashier Telegram IDs (optional). */
+  CASHIER_TG_IDS: (process.env.CASHIER_TG_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => {
+      if (!/^\d+$/.test(s)) {
+        console.error(`[config] Некорректный CASHIER_TG_ID: "${s}" — ожидается числовой Telegram ID`);
         return false;
       }
       return true;

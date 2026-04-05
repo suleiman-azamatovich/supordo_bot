@@ -21,7 +21,8 @@ import {
   escapeHtml, paginate, addPaginationRow,
 } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
-import { BoardStatus } from "@prisma/client";
+import { notify } from "../../services/notify";
+import { BoardStatus, PaymentProofStatus } from "@prisma/client";
 
 export const boardsHandlers = new Composer<BotContext>();
 
@@ -33,7 +34,7 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
   const boards = await prisma.board.findMany({
     include: {
       rentals: {
-        where: { status: { in: ["RENTED", "WAIT_RETURN"] } },
+        where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
         include: { user: true, tariff: true },
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -44,50 +45,69 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
 
   const totalBoards = boards.length;
   const available = boards.filter((b) => b.status === BoardStatus.AVAILABLE).length;
-  const rented = boards.filter((b) => b.status === BoardStatus.RENTED).length;
   const service = boards.filter((b) => b.status === BoardStatus.SERVICE).length;
 
-  const paged = paginate(boards, page, 10);
+  // Считаем по статусам аренд (для RENTED досок)
+  let paying = 0, active = 0, waitReturn = 0;
+  for (const b of boards) {
+    if (b.status !== BoardStatus.RENTED) continue;
+    const r = b.rentals[0];
+    if (!r) continue;
+    if (["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(r.status)) paying++;
+    else if (r.status === "WAIT_RETURN") waitReturn++;
+    else active++;
+  }
 
-  let text = `🏄 <b>Доски</b>\n\n`;
-  text += `Всего: <b>${totalBoards}</b> | ✅ ${available} | 🔴 ${rented} | 🔧 ${service}\n\n`;
+  const paged = paginate(boards, page, 5);
+
+  let text = `🏄 <b>Доски</b> (${totalBoards})\n\n`;
+  text += `✅ — свободна (${available})\n`;
+  text += `💳 — ожидает оплаты (${paying})\n`;
+  text += `🔵 — в аренде (${active})\n`;
+  text += `⏰ — ожидает возврата (${waitReturn})\n`;
+  text += `🔧 — обслуживание (${service})`;
 
   const kb = new InlineKeyboard();
   const now = new Date();
   for (const b of paged.items) {
     const rental = b.rentals[0];
     const hasWaitReturn = rental?.status === "WAIT_RETURN";
-    let icon: string, label: string, timeInfo = "";
+    let icon: string, timeInfo = "";
     if (b.status === BoardStatus.AVAILABLE) {
-      icon = "✅"; label = "свободна";
+      icon = "✅";
     } else if (b.status === BoardStatus.SERVICE) {
-      icon = "🔧"; label = "на обслуживании";
+      icon = "🔧";
+    } else if (rental && ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
+      icon = "💳";
     } else if (b.status === BoardStatus.RENTED && rental?.startAt && rental?.tariff) {
       const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
       const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
       if (hasWaitReturn) {
         const overdue = Math.ceil((now.getTime() - endAt.getTime()) / 60_000);
-        icon = "⏰"; label = "ожидает возврата";
+        icon = "⏰";
         timeInfo = overdue > 0 ? ` +${fmtDuration(overdue)}` : "";
       } else {
         const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
-        icon = "🔴"; label = `в аренде — ${fmtDuration(remaining)}`;
+        icon = "🔵";
         timeInfo = ` ${fmtDuration(remaining)}`;
       }
     } else if (b.status === BoardStatus.RENTED) {
-      icon = hasWaitReturn ? "⏰" : "🔴";
-      label = hasWaitReturn ? "ожидает возврата" : "в аренде";
+      icon = hasWaitReturn ? "⏰" : "🔵";
     } else {
-      icon = "📅"; label = "забронирована";
+      icon = "📅";
     }
-    text += `${icon} <b>${b.code}</b> — ${label}\n`;
     kb.text(`${icon} ${b.code}${timeInfo}`, `admin:board_detail:${b.id}`).row();
   }
 
   addPaginationRow(kb, paged.page, paged.totalPages, "admin:boards:");
-  kb.row().text("⬅️ Меню", "back:menu");
+  kb.row().text("🔄 Обновить", `admin:boards:${paged.page}`).text("⬅️ Меню", "back:menu");
+  kb.row().text("🧹 Убрать лишнее", "clear:chat");
 
-  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e: any) {
+    if (!e.description?.includes("message is not modified")) throw e;
+  }
 });
 
 /**
@@ -106,7 +126,7 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
     where: { id: boardId },
     include: {
       rentals: {
-        where: { status: { in: ["RENTED", "WAIT_RETURN"] } },
+        where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
         include: { user: true, tariff: true },
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -129,40 +149,71 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
     const rental = board.rentals[0];
     if (rental) {
       const client = escapeHtml(rental.clientName ?? rental.user.name);
-      text = `🔴 <b>${board.code}</b> — в аренде\n\n`;
-      text += `👤 Клиент: <b>${client}</b>\n`;
-      if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
-      if (rental.tariff) {
-        const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
-        text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
-        if (rental.startAt) {
-          const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
-          const now = new Date();
-          const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
-          if (rental.status === "WAIT_RETURN") {
-            text += `⏰ <b>Время вышло! Ожидает возврата</b>\n`;
-          } else if (remaining > 0) {
-            text += `⏳ Осталось: <b>${fmtDuration(remaining)}</b>\n`;
+
+      // Аренда в стадии оплаты (💳)
+      if (["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
+        text = `💳 <b>${board.code}</b> — ожидает оплаты\n\n`;
+        text += `👤 Клиент: <b>${client}</b>\n`;
+        if (rental.tariff) {
+          text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+        }
+        text += `📅 Создана: ${fmtDate(rental.createdAt)}\n`;
+
+        if (rental.status === "CREATED" || rental.status === "WAIT_PAYMENT") {
+          text += `\n⏳ <i>Клиент ещё не отправил чек оплаты.</i>`;
+        } else {
+          // WAIT_ADMIN — ищем отправленный чек
+          const proof = await prisma.paymentProof.findFirst({
+            where: { kind: "RENTAL", refId: rental.id, status: PaymentProofStatus.SUBMITTED },
+            orderBy: { createdAt: "desc" },
+          });
+          if (proof) {
+            text += `\n📎 <b>Чек оплаты #${proof.id}</b> — ожидает проверки\n`;
+            text += `💰 Сумма: <b>${fmtPrice(proof.amount)}</b>\n`;
+            kb.text(`✅ Подтвердить`, `pay:approve:${proof.id}`)
+              .text(`❌ Отклонить`, `pay:reject:${proof.id}`)
+              .row();
+          } else {
+            text += `\n⏳ <i>Ожидает подтверждения администратора.</i>`;
           }
         }
-      }
 
-      if (rental.status === "WAIT_RETURN") {
-        const overdue = await rentalService.getOverdueMinutes(rental);
-        if (overdue > 0) {
-          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
-          text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)} — ${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+        // Активная аренда (🔵 / ⏰)
+      } else {
+        text = `🔵 <b>${board.code}</b> — в аренде\n\n`;
+        text += `👤 Клиент: <b>${client}</b>\n`;
+        if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
+        if (rental.tariff) {
+          const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
+          text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+          if (rental.startAt) {
+            const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+            const now = new Date();
+            const remaining = Math.max(0, Math.ceil((endAt.getTime() - now.getTime()) / 60_000));
+            if (rental.status === "WAIT_RETURN") {
+              text += `⏰ <b>Время вышло! Ожидает возврата</b>\n`;
+            } else if (remaining > 0) {
+              text += `⏳ Осталось: <b>${fmtDuration(remaining)}</b>\n`;
+            }
+          }
         }
-        kb.text("✅ Принять возврат", `seller:return:${rental.id}`).row();
-        if (overdue > 0) {
-          const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
-          kb.text(`🔄 Закрыть просрочку (${fmtDuration(overdue)} — ${fmtPrice(cost)})`, `admin:close_overdue:${rental.id}`).row();
+
+        if (rental.status === "WAIT_RETURN") {
+          const overdue = await rentalService.getOverdueMinutes(rental);
+          if (overdue > 0) {
+            const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+            text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)} — ${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+          }
+          kb.text("📩 Напомнить о возврате", `admin:remind_return:${rental.id}`).row();
+        } else if (rental.status === "RENTED") {
+          kb.text("📩 Напомнить клиенту", `admin:remind_active:${rental.id}`).row();
         }
+        kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
+        kb.text("✅ Принять доску", `return:confirm:${rental.id}`).row();
+        kb.text("✉️ Написать клиенту", `admin:board_msg:${rental.id}`).row();
       }
-      kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
-      kb.text("✅ Завершить аренду", `admin:complete_rental_confirm:${rental.id}`).row();
     } else {
-      text = `🔴 <b>${board.code}</b> — в аренде (данные не найдены)`;
+      text = `💳 <b>${board.code}</b> — в аренде (данные не найдены)`;
     }
   }
 
@@ -186,6 +237,125 @@ boardsHandlers.callbackQuery(/^board:(service|available):(\d+)$/, async (ctx) =>
     {
       reply_markup: new InlineKeyboard()
         .text("🏄 Доски", "admin:boards")
+        .text("⬅️ Меню", "back:menu"),
+    }
+  );
+});
+
+/** Напоминание клиенту о возврате доски */
+boardsHandlers.callbackQuery(/^admin:remind_return:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, user: true, tariff: true },
+  });
+
+  const overdue = await rentalService.getOverdueMinutes(rental);
+  const cost = overdue > 0 ? overdue * rentalService.OVERDUE_RATE_PER_MIN : 0;
+
+  let msg = `⏰ <b>Напоминание о возврате</b>\n\n`;
+  msg += `Уважаемый клиент, время аренды доски <b>${rental.board.code}</b> истекло.\n`;
+  msg += `Пожалуйста, верните доску на точку проката.\n`;
+  if (cost > 0) {
+    msg += `\n⚠️ Каждая минута просрочки — <b>${rentalService.OVERDUE_RATE_PER_MIN} сом</b>.`;
+    msg += `\nТекущая просрочка: <b>${fmtDuration(overdue)} — ${fmtPrice(cost)}</b>.`;
+  }
+  msg += `\n\nСпасибо за понимание! 🙏`;
+
+  try {
+    await notify(ctx.api, Number(rental.user.tgId), msg);
+    await ctx.answerCallbackQuery({ text: "📩 Напоминание отправлено клиенту", show_alert: true });
+  } catch {
+    await ctx.answerCallbackQuery({ text: "⚠️ Не удалось отправить напоминание", show_alert: true });
+  }
+});
+
+/** Напоминание клиенту во время активной аренды (без просрочки) */
+boardsHandlers.callbackQuery(/^admin:remind_active:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, user: true, tariff: true },
+  });
+
+  let remaining = 0;
+  if (rental.startAt && rental.tariff) {
+    const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
+    const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+    remaining = Math.max(0, Math.ceil((endAt.getTime() - Date.now()) / 60_000));
+  }
+
+  let msg = `🏄 <b>Напоминание</b>\n\n`;
+  msg += `Уважаемый клиент, напоминаем — вы арендуете доску <b>${rental.board.code}</b>.\n`;
+  if (remaining > 0) {
+    msg += `⏳ Осталось: <b>${fmtDuration(remaining)}</b>.\n`;
+  }
+  msg += `\nПожалуйста, рассчитывайте время и возвращайтесь на берег вовремя. 🙏`;
+
+  try {
+    await notify(ctx.api, Number(rental.user.tgId), msg);
+    await ctx.answerCallbackQuery({ text: "📩 Напоминание отправлено", show_alert: true });
+  } catch {
+    await ctx.answerCallbackQuery({ text: "⚠️ Не удалось отправить", show_alert: true });
+  }
+});
+
+/** Админ хочет написать сообщение клиенту конкретной доски */
+boardsHandlers.callbackQuery(/^admin:board_msg:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true },
+  });
+
+  ctx.session.boardMsgRentalId = rentalId;
+
+  await ctx.editMessageText(
+    `✉️ Напишите сообщение для клиента доски <b>${rental.board.code}</b>.\n\n` +
+    `<i>Введите текст ниже — он будет отправлен клиенту.</i>`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("❌ Отмена", `admin:board_detail:${rental.boardId}`),
+    }
+  );
+});
+
+/** Обработка текста — отправка сообщения клиенту доски */
+boardsHandlers.on("message:text", async (ctx, next) => {
+  const rentalId = ctx.session.boardMsgRentalId;
+  if (!rentalId) return next();
+
+  ctx.session.boardMsgRentalId = undefined;
+  const text = ctx.message.text;
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, user: true },
+  });
+
+  const adminName = ctx.dbUser?.name ?? "Администратор";
+
+  await notify(
+    ctx.api,
+    Number(rental.user.tgId),
+    `📢 <b>Сообщение от администрации</b>\n\n` +
+    `🏄 Доска: <b>${rental.board.code}</b>\n\n` +
+    `${escapeHtml(text)}`
+  );
+
+  await ctx.reply(
+    `✅ Сообщение отправлено клиенту <b>${escapeHtml(rental.user.name)}</b> (доска ${rental.board.code}).`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🏄 К доске", `admin:board_detail:${rental.boardId}`)
         .text("⬅️ Меню", "back:menu"),
     }
   );

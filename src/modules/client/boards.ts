@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Просмотр досок клиентом.
  *
  * Обрабатывает:
@@ -23,11 +23,13 @@ export const boardsHandlers = new Composer<BotContext>();
 boardsHandlers.callbackQuery(/^client:boards(:(\d+))?$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const page = parseInt(ctx.match?.[2] ?? "1");
+  const myTgId = ctx.dbUser?.tgId;
 
   const boards = await prisma.board.findMany({
     include: {
       rentals: {
-        where: { status: { in: ["RENTED", "WAIT_RETURN"] } },
+        where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
+        include: { user: true },
         orderBy: { createdAt: "desc" },
         take: 1,
       },
@@ -35,40 +37,50 @@ boardsHandlers.callbackQuery(/^client:boards(:(\d+))?$/, async (ctx) => {
     orderBy: { code: "asc" },
   });
 
-  const paged = paginate(boards, page, 10);
+  const paged = paginate(boards, page);
   const freeCount = boards.filter((b) => b.status === BoardStatus.AVAILABLE).length;
 
   let text = `🏄 <b>Доски</b> (свободных: ${freeCount} из ${boards.length})\n\n`;
-  text += `📷 <i>На каждой доске есть QR-код — отсканируйте его камерой телефона, чтобы начать аренду!</i>`;
+  text += `👇 Нажмите на свободную доску (✅), чтобы арендовать.\n`;
+  text += `Или отсканируйте 📷 QR-код на доске.\n`;
 
   const kb = new InlineKeyboard();
   for (const b of paged.items) {
-    const hasWaitReturn = b.rentals[0]?.status === "WAIT_RETURN";
+    const rental = b.rentals[0];
+    const isMine = rental && myTgId ? rental.user.tgId === myTgId : false;
+    const mineTag = isMine ? " 👈 моя" : "";
+
     let icon: string, label: string;
     if (b.status === BoardStatus.AVAILABLE) {
       icon = "✅"; label = "свободна";
     } else if (b.status === BoardStatus.SERVICE) {
       icon = "🔧"; label = "на обслуживании";
-    } else if (b.status === BoardStatus.RENTED && hasWaitReturn) {
+    } else if (rental?.status === "WAIT_RETURN") {
       icon = "⏰"; label = "ожидает возврата";
+    } else if (rental && ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
+      icon = "💳"; label = "ожидает оплаты";
     } else if (b.status === BoardStatus.RENTED) {
-      icon = "🔴"; label = "в аренде";
+      icon = "🔵"; label = "в аренде";
     } else {
       icon = "📅"; label = "забронирована";
     }
     if (b.status === BoardStatus.AVAILABLE) {
       kb.text(`${icon} ${b.code} — ${label}`, `client:rent_board:${b.code}`).row();
+    } else if (isMine && rental) {
+      kb.text(`${icon} ${b.code} — ${label}${mineTag}`, `client:my_detail:${rental.id}`).row();
     } else {
-      kb.text(`${icon} ${b.code} — ${label}`, `client:board_info:${b.id}`).row();
+      kb.text(`${icon} ${b.code} — ${label}${mineTag}`, `client:board_info:${b.id}`).row();
     }
   }
   addPaginationRow(kb, paged.page, paged.totalPages, "client:boards:");
-  kb.row().text("🔤 Ввести код доски", "client:enter_code");
-  kb.row().text("⬅️ Меню", "back:menu");
+  kb.row().text("🔄 Обновить", `client:boards:${paged.page}`).text("⬅️ Меню", "back:menu");
+  kb.row().text("🧹 Убрать лишнее", "clear:chat");
 
-  text += `\n\n💡 <i>Также можно отсканировать QR-код на доске камерой телефона — бот откроется автоматически!</i>`;
-
-  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e: any) {
+    if (!e.description?.includes("message is not modified")) throw e;
+  }
 });
 
 /** Детали занятой/заблокированной доски (ориентировочное время освобождения) */
@@ -88,9 +100,13 @@ boardsHandlers.callbackQuery(/^client:board_info:(\d+)$/, async (ctx) => {
     if (rental?.startAt && rental.tariff) {
       const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
       const freeAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
-      text += `🔴 Сейчас в аренде.\nОриентировочно освободится: <b>${fmtDate(freeAt)}</b>`;
+      if (freeAt.getTime() < Date.now()) {
+        text += `🔵 Сейчас в аренде.\n⏰ Время аренды истекло — ожидается возврат.`;
+      } else {
+        text += `🔵 Сейчас в аренде.\nОриентировочно освободится: <b>${fmtDate(freeAt)}</b>`;
+      }
     } else {
-      text += `🔴 Сейчас в аренде.`;
+      text += `🔵 Сейчас в аренде.`;
     }
   } else if (board.status === BoardStatus.BOOKED) {
     text += `📅 Забронирована.`;
