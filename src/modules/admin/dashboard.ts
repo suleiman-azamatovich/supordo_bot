@@ -121,7 +121,7 @@ async function renderDashboard(ctx: BotContext) {
     kb.text(`💳 Оплаты (${pendingPayments})`, "admin:payments").row();
   }
   if (activeRentals > 0) {
-    kb.text(`🏄 Все в аренде (${activeRentals})`, "seller:rented").row();
+    kb.text(`🏄 Все в аренде (${activeRentals})`, "admin:boards").row();
   }
   const modeBtn = testMode
     ? "🟢 Режим → Рабочий"

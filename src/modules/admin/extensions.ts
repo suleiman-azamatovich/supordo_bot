@@ -73,7 +73,7 @@ extensionsHandlers.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
     await ctx.editMessageText(msg, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("🔄 Возвраты", "admin:returns")
+        .text("🏄 Доски", "admin:boards")
         .row()
         .text("⬅️ Меню", "back:menu"),
     });
@@ -125,7 +125,7 @@ extensionsHandlers.callbackQuery(/^ext:reject:(\d+)$/, async (ctx) => {
     {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("🔄 Возвраты", "admin:returns")
+        .text("🏄 Доски", "admin:boards")
         .text("⬅️ Меню", "back:menu"),
     }
   );
@@ -247,7 +247,6 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
     await ctx.editMessageText(msg, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("🔄 Возвраты", "admin:returns")
         .text("🏄 Доски", "admin:boards")
         .row()
         .text("⬅️ Меню", "back:menu"),
@@ -273,7 +272,7 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
     await notify(ctx.api, rental.user.tgId, clientMsg);
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`, {
-      reply_markup: new InlineKeyboard().text("⬅️ Назад", "admin:returns"),
+      reply_markup: new InlineKeyboard().text("⬅️ Назад", "admin:boards"),
     });
   }
 });

@@ -35,7 +35,7 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
     include: {
       rentals: {
         where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
-        include: { user: true, tariff: true },
+        include: { user: true, tariff: true, seller: true },
         orderBy: { createdAt: "desc" },
         take: 1,
       },
@@ -127,7 +127,7 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
     include: {
       rentals: {
         where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
-        include: { user: true, tariff: true },
+        include: { user: true, tariff: true, seller: true },
         orderBy: { createdAt: "desc" },
         take: 1,
       },
@@ -153,8 +153,12 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
 
       // Аренда в стадии оплаты (💳)
       if (["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
+        const isWalkinPay = !!rental.sellerUserId;
         text = `💳 <b>${board.code}</b> — ожидает оплаты\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
+        if (isWalkinPay && rental.seller) {
+          text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b>\n`;
+        }
         if (rental.tariff) {
           text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
         }
@@ -181,8 +185,14 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
 
         // Активная аренда (🔵 / ⏰)
       } else {
-        text = `🔵 <b>${board.code}</b> — в аренде\n\n`;
+        const isWalkin = !!rental.sellerUserId;
+        text = isWalkin
+          ? `👤 <b>${board.code}</b> — выдана админом\n\n`
+          : `🔵 <b>${board.code}</b> — в аренде\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
+        if (isWalkin && rental.seller) {
+          text += `🛡 Выдал: <b>${escapeHtml(rental.seller.name)}</b>\n`;
+        }
         if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
         if (rental.tariff) {
           const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
@@ -199,19 +209,27 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           }
         }
 
+        if (isWalkin) {
+          text += `\n📵 <i>Клиент без Telegram — связь только лично на точке.</i>\n`;
+        }
+
         if (rental.status === "WAIT_RETURN") {
           const overdue = await rentalService.getOverdueMinutes(rental);
           if (overdue > 0) {
             const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
             text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)} — ${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
           }
-          kb.text("📩 Напомнить о возврате", `admin:remind_return:${rental.id}`).row();
-        } else if (rental.status === "RENTED") {
+          if (!isWalkin) {
+            kb.text("📩 Напомнить о возврате", `admin:remind_return:${rental.id}`).row();
+          }
+        } else if (rental.status === "RENTED" && !isWalkin) {
           kb.text("📩 Напомнить клиенту", `admin:remind_active:${rental.id}`).row();
         }
         kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
         kb.text("✅ Принять доску", `return:confirm:${rental.id}`).row();
-        kb.text("✉️ Написать клиенту", `admin:board_msg:${rental.id}`).row();
+        if (!isWalkin) {
+          kb.text("✉️ Написать клиенту", `admin:board_msg:${rental.id}`).row();
+        }
       }
     } else {
       text = `💳 <b>${board.code}</b> — в аренде (данные не найдены)`;

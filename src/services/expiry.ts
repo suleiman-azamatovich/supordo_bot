@@ -88,6 +88,8 @@ export function startExpiryChecker(api: Api) {
         const remainingMs = expiresAt.getTime() - now.getTime();
         const chatId = Number(rental.user.tgId);
 
+        const isWalkin = !!rental.sellerUserId;
+
         // --- Предупреждение: осталось ≤ 10% времени ---
         const warningThreshold = durationMs * 0.1;
         if (
@@ -101,15 +103,18 @@ export function startExpiryChecker(api: Api) {
             `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) — осталось ${remainMin} мин`
           );
 
-          try {
-            await notify(
-              api,
-              chatId,
-              `⚠️ Время аренды доски ${rental.board.code} почти истекло!\n` +
-              `Осталось менее ${remainMin} мин. Пожалуйста, возвращайтесь к берегу.`
-            );
-          } catch (e) {
-            console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+          // Walk-in: клиент без Telegram, уведомляем только админов
+          if (!isWalkin) {
+            try {
+              await notify(
+                api,
+                chatId,
+                `⚠️ Время аренды доски ${rental.board.code} почти истекло!\n` +
+                `Осталось менее ${remainMin} мин. Пожалуйста, возвращайтесь к берегу.`
+              );
+            } catch (e) {
+              console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+            }
           }
 
           // Уведомить продавцов
@@ -130,15 +135,17 @@ export function startExpiryChecker(api: Api) {
             `[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) — время истекло, грейс ${graceLabel}`
           );
 
-          try {
-            await notify(
-              api,
-              chatId,
-              `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-              `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
-            );
-          } catch (e) {
-            console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+          if (!isWalkin) {
+            try {
+              await notify(
+                api,
+                chatId,
+                `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
+                `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
+              );
+            } catch (e) {
+              console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+            }
           }
 
           await notifySellers(
@@ -165,15 +172,17 @@ export function startExpiryChecker(api: Api) {
             `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) → WAIT_RETURN (просрочка ${OVERDUE_RATE_PER_MIN} сом/мин)`
           );
 
-          try {
-            await notify(
-              api,
-              chatId,
-              `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
-              `Верните доску ${rental.board.code} как можно скорее!`
-            );
-          } catch (e) {
-            console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+          if (!isWalkin) {
+            try {
+              await notify(
+                api,
+                chatId,
+                `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
+                `Верните доску ${rental.board.code} как можно скорее!`
+              );
+            } catch (e) {
+              console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
+            }
           }
 
           await notifySellers(

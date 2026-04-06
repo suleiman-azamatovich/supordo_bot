@@ -151,8 +151,7 @@ walkinHandlers.on("message:text", async (ctx, next) => {
       {
         parse_mode: "HTML",
         reply_markup: new InlineKeyboard()
-          .text("➕ Ещё одну", "seller:walkin")
-          .text("🔄 Возвраты", "admin:returns")
+          .text("🏄 К доскам", "admin:boards")
           .row()
           .text("⬅️ Меню", "back:menu"),
       }
