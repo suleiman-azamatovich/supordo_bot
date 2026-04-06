@@ -7,6 +7,20 @@
     "Рантайм",
     "таймлайн",
     "хендлер",
-    "sequentialize"
+    "dotenv",
+    "eslintcache",
+    "jscoverage",
+    "jspm",
+    "nuxt",
+    "Nuxt",
+    "pids",
+    "sequentialize",
+    "stylelintcache",
+    "Sveltekit",
+    "vite",
+    "Vite",
+    "vitepress",
+    "vuepress",
+    "wscript"
   ]
 }

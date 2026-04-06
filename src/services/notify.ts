@@ -20,13 +20,16 @@ export async function notify(
   const chatId = Number(tgId);
 
   // Сохраняем в БД
-  prisma.user.findUnique({ where: { tgId: BigInt(chatId) } }).then((user) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { tgId: BigInt(chatId) } });
     if (user) {
-      prisma.notification.create({
+      await prisma.notification.create({
         data: { userId: user.id, text: stripHtml(text) },
-      }).catch((e) => console.error('[notify] Ошибка сохранения уведомления:', e));
+      });
     }
-  }).catch((e) => console.error('[notify] Ошибка поиска пользователя:', e));
+  } catch (e) {
+    console.error('[notify] Ошибка сохранения уведомления:', e);
+  }
 
   // Отправляем сообщение в чат
   try {
