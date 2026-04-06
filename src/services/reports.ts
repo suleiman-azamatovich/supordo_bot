@@ -86,8 +86,10 @@ export async function dailyReport() {
   }
 
   // Walk-in vs клиентские аренды
-  const walkinCount = paidRentals.filter((r) => r.sellerUserId).length;
+  const walkinRentals = paidRentals.filter((r) => r.sellerUserId);
+  const walkinCount = walkinRentals.length;
   const clientCount = paidRentals.filter((r) => !r.sellerUserId).length;
+  const walkinRevenue = walkinRentals.reduce((s, r) => s + (r.tariff?.price ?? 0), 0);
 
   // Просрочки среди завершённых
   let overdueCount = 0;
@@ -116,7 +118,7 @@ export async function dailyReport() {
     approvedPayments: approvedPayments.length,
     rejectedPayments: rejectedPayments.length,
     pendingPayments: pendingPayments.length,
-    rentalPaymentsSum, extensionPaymentsSum, overduePaymentsSum,
+    rentalPaymentsSum, extensionPaymentsSum, overduePaymentsSum, walkinRevenue,
     // Доски
     totalBoards: boards.length,
     availableBoards: availableBoards.length,
@@ -186,10 +188,13 @@ export function formatDailyReport(data: Awaited<ReturnType<typeof dailyReport>>)
   if (data.pendingPayments > 0) {
     text += `  🔍 На проверке: <b>${data.pendingPayments}</b>\n`;
   }
-  if (data.rentalPaymentsSum > 0 || data.extensionPaymentsSum > 0 || data.overduePaymentsSum > 0) {
+  if (data.rentalPaymentsSum > 0 || data.extensionPaymentsSum > 0 || data.overduePaymentsSum > 0 || data.walkinRevenue > 0) {
     text += `  <b>По категориям:</b>\n`;
+    if (data.walkinRevenue > 0) {
+      text += `    👤 Walk-in (наличные): ${fmtPrice(data.walkinRevenue)}\n`;
+    }
     if (data.rentalPaymentsSum > 0) {
-      text += `    🏄 Аренды: ${fmtPrice(data.rentalPaymentsSum)}\n`;
+      text += `    📱 Аренды (через бота): ${fmtPrice(data.rentalPaymentsSum)}\n`;
     }
     if (data.extensionPaymentsSum > 0) {
       text += `    ⏱ Продления: ${fmtPrice(data.extensionPaymentsSum)}\n`;

@@ -15,7 +15,7 @@ import { BoardStatus, Role } from "@prisma/client";
 import { fmtPrice, fmtDuration } from "../../ui/helpers";
 
 /** Путь к файлу QR-кода MBank на диске */
-const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "mbank_qr.jpeg");
+const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "IMG-20260406-WA0012.jpg");
 
 /**
  * Начало аренды по коду доски.
@@ -28,10 +28,6 @@ const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "mbank_q
  * Проверяет доступность доски и показывает список тарифов.
  */
 export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
-  if (ctx.dbUser?.role === "ADMIN" || ctx.dbUser?.role === "CASHIER") {
-    return ctx.reply("⛔ Администратор и кассир не могут арендовать доски.");
-  }
-
   const board = await prisma.board.findUnique({
     where: { code: boardCode },
     include: { spot: true },
@@ -44,6 +40,34 @@ export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
     return ctx.reply(
       `⚠️ Доска <b>${board.code}</b> сейчас недоступна (статус: ${board.status}).`,
       { parse_mode: "HTML" }
+    );
+  }
+
+  // Админ / кассир → walk-in поток (выбор тарифа → имя клиента → аренда)
+  if (ctx.dbUser?.role === "ADMIN" || ctx.dbUser?.role === "CASHIER") {
+    ctx.session.walkin = { boardId: board.id };
+
+    const tariffs = await prisma.tariff.findMany({
+      where: { spotId: board.spotId, isActive: true },
+      orderBy: [{ sortOrder: "asc" }, { durationMinutes: "asc" }],
+    });
+
+    if (tariffs.length === 0) {
+      return ctx.reply("❌ Для этой точки нет тарифов.");
+    }
+
+    const kb = new InlineKeyboard();
+    for (const t of tariffs) {
+      kb.text(`${t.name} — ${fmtPrice(t.price)}`, `walkin:tariff:${t.id}`).row();
+    }
+    kb.text("⬅️ Меню", "back:menu");
+
+    return ctx.reply(
+      `➕ <b>Выдать доску клиенту</b>\n\n` +
+      `Доска: <b>${board.code}</b>\n` +
+      `📍 Точка: ${board.spot.name}\n\n` +
+      `Выберите тариф:`,
+      { parse_mode: "HTML", reply_markup: kb }
     );
   }
 

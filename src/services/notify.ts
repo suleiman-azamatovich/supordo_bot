@@ -4,7 +4,7 @@ import fs from "fs";
 import { prisma } from "../db/prisma";
 import { fmtPrice } from "../ui/helpers";
 
-const MBANK_QR_PATH = path.join(__dirname, "..", "..", "qr-bank", "mbank_qr.jpeg");
+const MBANK_QR_PATH = path.join(__dirname, "..", "..", "qr-bank", "IMG-20260406-WA0012.jpg");
 
 /**
  * Отправить уведомление:

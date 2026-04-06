@@ -94,7 +94,7 @@ startHandlers.callbackQuery("client:enter_code", async (ctx) => {
 
 /** Кнопка «Меню» — возврат в главное меню (используется всеми ролями) */
 startHandlers.callbackQuery("back:menu", async (ctx) => {
-  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => { });
   const role = ctx.dbUser?.role ?? "CLIENT";
   ctx.session.waitingBoardCode = false;
   ctx.session.walkin = undefined;

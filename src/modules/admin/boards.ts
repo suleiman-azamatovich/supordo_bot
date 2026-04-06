@@ -139,6 +139,7 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
 
   if (board.status === BoardStatus.AVAILABLE) {
     text = `✅ <b>${board.code}</b> — свободна\n\nДоска доступна для аренды клиентами.`;
+    kb.text("➕ Выдать клиенту", `walkin:board:${board.id}`).row();
     kb.text("🔧 Заблокировать", `board:service:${board.id}`).row();
 
   } else if (board.status === BoardStatus.SERVICE) {
