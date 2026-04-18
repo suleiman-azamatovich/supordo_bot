@@ -6,28 +6,26 @@
  *  - admin:chat_client — повторный вход в чат по оплате
  *  - message:text — пересылка текста клиенту (по оплате или продлению)
  *
- * Режим чата определяется полем ctx.session.chatMode:
- *  - 'payment' — переписка по оплате (chatProofId)
- *  - 'extension' — переписка по продлению (chatRentalId)
+ * Режим чата определяется полем ctx.session.adminChat (discriminated union):
+ *  - mode: 'payment' — переписка по оплате
+ *  - mode: 'extension' — переписка по продлению
  *
  * Текстовый хендлер вызывает next() если:
- *  - Ожидается фото MBank QR (waitingMBankQR) — пропускаем в roles.ts
+ *  - Ожидается фото MBank QR (inputMode === 'mbank_qr') — пропускаем в roles.ts
  *  - Не в режиме чата — пропускаем в walkin.ts
  */
 
 import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
+import { escapeHtml } from "../../ui/helpers";
 
 export const chatHandlers = new Composer<BotContext>();
 
 /** Завершение режима чата — очистка всех чат-полей сессии */
 chatHandlers.callbackQuery("admin:end_chat", async (ctx) => {
   await ctx.answerCallbackQuery("Чат завершён");
-  ctx.session.chatMode = undefined;
-  ctx.session.chatWithClientTgId = undefined;
-  ctx.session.chatProofId = undefined;
-  ctx.session.chatRentalId = undefined;
+  ctx.session.adminChat = undefined;
   await ctx.editMessageText("🛑 Режим переписки завершён.", {
     reply_markup: new InlineKeyboard()
       .text("✅ Проверка оплат", "cashier:payments")
@@ -50,13 +48,10 @@ chatHandlers.callbackQuery(/^admin:chat_client:(\d+)$/, async (ctx) => {
     include: { user: true },
   });
 
-  ctx.session.chatMode = 'payment';
-  ctx.session.chatWithClientTgId = Number(proof.user.tgId);
-  ctx.session.chatProofId = proofId;
-  ctx.session.chatRentalId = undefined;
+  ctx.session.adminChat = { mode: 'payment', clientTgId: Number(proof.user.tgId), proofId };
 
   await ctx.reply(
-    `💬 <b>Чат с клиентом ${proof.user.name}</b> (оплата #${proofId})\n\n` +
+    `💬 <b>Чат с клиентом ${escapeHtml(proof.user.name)}</b> (оплата #${proofId})\n\n` +
     `Напишите сообщение — оно будет отправлено клиенту.`,
     {
       parse_mode: "HTML",
@@ -77,27 +72,27 @@ chatHandlers.callbackQuery(/^admin:chat_client:(\d+)$/, async (ctx) => {
  */
 chatHandlers.on("message:text", async (ctx, next) => {
   // Пропускаем если ожидается фото MBank QR
-  if (ctx.session.waitingMBankQR) return next();
+  if (ctx.session.inputMode === 'mbank_qr') return next();
+
+  const chat = ctx.session.adminChat;
+  if (!chat) return next();
 
   // Чат по оплате
-  if (ctx.session.chatMode === 'payment' && ctx.session.chatWithClientTgId && ctx.session.chatProofId) {
-    const clientTgId = ctx.session.chatWithClientTgId;
-    const proofId = ctx.session.chatProofId;
-
+  if (chat.mode === 'payment') {
     try {
       await ctx.api.sendMessage(
-        clientTgId,
-        `💬 <b>Администратор</b> (оплата #${proofId}):\n\n${ctx.message.text}`,
+        chat.clientTgId,
+        `💬 <b>Администратор</b> (оплата #${chat.proofId}):\n\n${escapeHtml(ctx.message.text)}`,
         {
           parse_mode: "HTML",
           reply_markup: new InlineKeyboard()
-            .text("💬 Ответить", `client:chat_admin:${proofId}`),
+            .text("💬 Ответить", `client:chat_admin:${chat.proofId}`),
         }
       );
       await ctx.reply("✅ Сообщение отправлено клиенту.", {
         reply_markup: new InlineKeyboard()
-          .text("✅ Подтвердить оплату", `pay:approve:${proofId}`)
-          .text("❌ Отклонить", `pay:reject:${proofId}`)
+          .text("✅ Подтвердить оплату", `pay:approve:${chat.proofId}`)
+          .text("❌ Отклонить", `pay:reject:${chat.proofId}`)
           .row()
           .text("🛑 Завершить чат", `admin:end_chat`),
       });
@@ -108,24 +103,21 @@ chatHandlers.on("message:text", async (ctx, next) => {
   }
 
   // Чат по продлению
-  if (ctx.session.chatMode === 'extension' && ctx.session.chatWithClientTgId && ctx.session.chatRentalId) {
-    const clientTgId = ctx.session.chatWithClientTgId;
-    const rentalId = ctx.session.chatRentalId;
-
+  if (chat.mode === 'extension') {
     try {
       await ctx.api.sendMessage(
-        clientTgId,
-        `💬 <b>Администратор</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
+        chat.clientTgId,
+        `💬 <b>Администратор</b> (продление #${chat.rentalId}):\n\n${escapeHtml(ctx.message.text)}`,
         {
           parse_mode: "HTML",
           reply_markup: new InlineKeyboard()
-            .text("💬 Ответить", `client:chat_ext:${rentalId}`),
+            .text("💬 Ответить", `client:chat_ext:${chat.rentalId}`),
         }
       );
       await ctx.reply("✅ Сообщение отправлено клиенту.", {
         reply_markup: new InlineKeyboard()
-          .text("✅ Подтвердить", `ext:approve:${rentalId}`)
-          .text("❌ Отклонить", `ext:reject:${rentalId}`)
+          .text("✅ Подтвердить", `ext:approve:${chat.rentalId}`)
+          .text("❌ Отклонить", `ext:reject:${chat.rentalId}`)
           .row()
           .text("🛑 Завершить чат", `admin:end_chat`),
       });

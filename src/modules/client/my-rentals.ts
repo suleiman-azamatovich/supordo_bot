@@ -14,39 +14,23 @@ import { Composer, InlineKeyboard } from "grammy";
 import { Role } from "@prisma/client";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
-import { fmtPrice, fmtDuration, fmtDate, paginate, addPaginationRow } from "../../ui/helpers";
+import {
+  fmtPrice, fmtDuration, fmtDate,
+  paginate, addPaginationRow,
+  rentalStatusIcon, rentalStatusLabel,
+  progressBar,
+} from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
+import { applyDiscount } from "../../services/pricing";
 import { sendMBankQR, notifyAdminsNewPayment } from "./helpers";
 
 export const myRentalsHandlers = new Composer<BotContext>();
 
-/** Иконка статуса аренды */
-function rentalIcon(status: string): string {
-  switch (status) {
-    case "CREATED":
-    case "WAIT_PAYMENT":
-    case "WAIT_ADMIN": return "💳";
-    case "RENTED": return "🏄";
-    case "WAIT_RETURN": return "⏰";
-    case "RETURNED": return "✅";
-    case "CANCELLED": return "❌";
-    default: return "📋";
-  }
-}
+/** Иконка статуса аренды (локальный алиас) */
+const rentalIcon = rentalStatusIcon;
 
-/** Краткая подпись статуса */
-function rentalLabel(status: string): string {
-  switch (status) {
-    case "CREATED": return "создана";
-    case "WAIT_PAYMENT": return "ожидает оплаты";
-    case "WAIT_ADMIN": return "проверка оплаты";
-    case "RENTED": return "в аренде";
-    case "WAIT_RETURN": return "верните доску!";
-    case "RETURNED": return "завершена";
-    case "CANCELLED": return "отменена";
-    default: return status;
-  }
-}
+/** Краткая подпись статуса (локальный алиас) */
+const rentalLabel = rentalStatusLabel;
 
 /** Список моих аренд — только активные, кнопки-доски */
 myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
@@ -67,16 +51,27 @@ myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
 
   let text = `📋 <b>Мои аренды</b> (${rentals.length})\n`;
   if (rentals.length === 0) {
-    text += "\nНет активных аренд.";
+    text += "\n<i>У вас пока нет активных аренд.</i>";
   }
 
   const kb = new InlineKeyboard();
+
+  // Параллельно считаем просрочки для всех WAIT_RETURN, чтобы не блокировать цикл
+  const overdueMap = new Map<number, number>();
+  const waitReturns = paged.items.filter((r) => r.status === "WAIT_RETURN");
+  if (waitReturns.length > 0) {
+    const results = await Promise.all(
+      waitReturns.map(async (r) => [r.id, await rentalService.getOverdueMinutes(r)] as const),
+    );
+    for (const [id, mins] of results) overdueMap.set(id, mins);
+  }
+
   for (const r of paged.items) {
     const icon = rentalIcon(r.status);
     const label = rentalLabel(r.status);
 
     let extra = "";
-    if (r.startAt && r.tariff && ["RENTED"].includes(r.status)) {
+    if (r.startAt && r.tariff && r.status === "RENTED") {
       const totalMin = r.tariff.durationMinutes + (r.extraMinutes ?? 0);
       const expiresAt = new Date(r.startAt.getTime() + totalMin * 60_000);
       const remainMs = expiresAt.getTime() - Date.now();
@@ -86,7 +81,7 @@ myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
       }
     }
     if (r.status === "WAIT_RETURN") {
-      const overdue = await rentalService.getOverdueMinutes(r);
+      const overdue = overdueMap.get(r.id) ?? 0;
       if (overdue > 0) {
         extra = ` −${fmtDuration(overdue)}`;
       }
@@ -96,7 +91,13 @@ myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
   }
 
   addPaginationRow(kb, paged.page, paged.totalPages, "client:my_list:");
-  kb.row().text("🔄 Обновить", `client:my_list:${paged.page}`).text("⬅️ Меню", "back:menu"); kb.row().text("🧹 Убрать лишнее", "clear:chat");
+
+  if (rentals.length === 0) {
+    kb.row().text("🏄 Арендовать доску", "client:boards");
+  }
+  kb.row().text("🔄 Обновить", `client:my_list:${paged.page}`).text("⬅️ Меню", "back:menu");
+  kb.row().text("🧹 Убрать лишнее", "clear:chat");
+
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
   } catch (e: any) {
@@ -104,8 +105,7 @@ myRentalsHandlers.callbackQuery(/^client:my_list(:(\d+))?$/, async (ctx) => {
   }
 });
 
-/** История операций — все аренды клиента + оплаты */
-/** История операций — только оплаты (PaymentProof) */
+/** История операций — платежи клиента (PaymentProof) */
 myRentalsHandlers.callbackQuery(/^client:my_history(:(\d+))?$/, async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => { });
   const page = parseInt(ctx.match?.[2] ?? "1");
@@ -212,7 +212,9 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
 
   const icon = rentalIcon(rental.status);
   const label = rentalLabel(rental.status);
-  const tariffPrice = rental.tariff?.price ?? 0;
+  const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+  const tariffPrice = rental.basePriceKgs ?? listPrice;
+  const discountPct = rental.discountPercent ?? 0;
   const tariffDuration = rental.tariff?.durationMinutes ?? 0;
 
   let text = `${icon} <b>${rental.board.code}</b> — ${label}\n`;
@@ -220,7 +222,14 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
 
   // Раздел: тариф
   text += `📋 <b>Тариф</b>\n`;
-  text += `   💰 ${fmtPrice(tariffPrice)}  ·  ⏱ ${fmtDuration(tariffDuration)}\n`;
+  if (listPrice > tariffPrice) {
+    text += `   <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(tariffPrice)}</b>  ·  ⏱ ${fmtDuration(tariffDuration)}\n`;
+    const savedKgs = listPrice - tariffPrice;
+    const pctLabel = discountPct > 0 ? ` −${discountPct}%` : "";
+    text += `   🎁 Скидка:${pctLabel} <b>−${fmtPrice(savedKgs)}</b>\n`;
+  } else {
+    text += `   💰 ${fmtPrice(tariffPrice)}  ·  ⏱ ${fmtDuration(tariffDuration)}\n`;
+  }
   if (rental.spot) {
     text += `   📍 ${rental.spot.name}\n`;
   }
@@ -250,6 +259,10 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
       if (remainMs > 0) {
         const mins = Math.floor(remainMs / 60_000);
         const secs = Math.floor((remainMs % 60_000) / 1_000);
+        const elapsedMs = Date.now() - rental.startAt.getTime();
+        const totalMs = totalMin * 60_000;
+        const ratio = totalMs > 0 ? elapsedMs / totalMs : 0;
+        text += `   ${progressBar(ratio)}  <b>${Math.round(ratio * 100)}%</b>\n`;
         text += `   ⏳ Осталось: <b>${mins} мин ${secs} сек</b>\n`;
         text += `   🏁 Истекает: ${fmtDate(expiresAt)}\n`;
       } else {
@@ -414,19 +427,29 @@ myRentalsHandlers.callbackQuery(/^client:extend_confirm:(\d+):(\d+)$/, async (ct
   }
 
   try {
-    await rentalService.requestExtend(rentalId, minutes, ctx.dbUser!.id);
+    // Фиксируем сумму продления в момент запроса — изменение цены тарифа
+    // после этого не повлияет на клиента (применяется снапшот в Rental.pendingExtraAmount).
+    const discountPct = rental.discountPercent ?? 0;
+    const finalExtPrice = applyDiscount(extensionTariff.price, discountPct);
+
+    await rentalService.requestExtend(rentalId, minutes, ctx.dbUser!.id, finalExtPrice);
+
+    const extDiscountLine =
+      discountPct > 0
+        ? `\n🎁 Скидка: <b>−${discountPct}%</b> (прайс ${fmtPrice(extensionTariff.price)})`
+        : "";
 
     await ctx.editMessageText(
       `⏱ <b>Продление аренды</b>\n\n` +
       `🏄 Доска: <b>${rental.board.code}</b>\n` +
-      `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n` +
-      `💰 Сумма: <b>${fmtPrice(extensionTariff.price)}</b>\n\n` +
+      `⏱ Продление: <b>+${fmtDuration(minutes)}</b>${extDiscountLine}\n` +
+      `💰 К оплате: <b>${fmtPrice(finalExtPrice)}</b>\n\n` +
       `💳 Оплатите по QR-коду ниже через <b>мобильный банкинг</b> или 💵 <b>наличными</b> на точке.\n` +
       `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
       { parse_mode: "HTML" }
     );
 
-    await sendMBankQR(ctx, extensionTariff.price, rentalId, "extension");
+    await sendMBankQR(ctx, finalExtPrice, rentalId, "extension");
   } catch (e: any) {
     await ctx.editMessageText(`⌛ ${e.message}`, {
       reply_markup: new InlineKeyboard().text("⬅️ Назад", "client:my_list"),
@@ -460,15 +483,22 @@ myRentalsHandlers.callbackQuery(/^ext:paid:(\d+)$/, async (ctx) => {
     });
   }
 
-  // Находим тариф с нужной длительностью для определения цены
-  const extensionTariff = await prisma.tariff.findFirst({
-    where: { spotId: rental.spotId, durationMinutes: rental.pendingExtraMinutes, isActive: true },
-  });
-
-  if (!extensionTariff) {
-    return ctx.reply("⚠️ Тариф не найден.", {
-      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+  // Используем снапшот суммы, зафиксированный при запросе продления.
+  // Это гарантирует, что изменение цены тарифа не повлияет на клиента.
+  // Fallback для старых записей без снапшота — пересчёт по текущему тарифу.
+  let finalExtPrice: number;
+  if (rental.pendingExtraAmount != null) {
+    finalExtPrice = rental.pendingExtraAmount;
+  } else {
+    const extensionTariff = await prisma.tariff.findFirst({
+      where: { spotId: rental.spotId, durationMinutes: rental.pendingExtraMinutes, isActive: true },
     });
+    if (!extensionTariff) {
+      return ctx.reply("⚠️ Тариф не найден.", {
+        reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+      });
+    }
+    finalExtPrice = applyDiscount(extensionTariff.price, rental.discountPercent ?? 0);
   }
 
   // Идемпотентность — не создаём дубль (только среди ещё не обработанных)
@@ -488,7 +518,7 @@ myRentalsHandlers.callbackQuery(/^ext:paid:(\d+)$/, async (ctx) => {
       data: {
         kind: "EXTENSION",
         refId: rentalId,
-        amount: extensionTariff.price,
+        amount: finalExtPrice,
         userId: ctx.dbUser!.id,
       },
     });
@@ -501,7 +531,7 @@ myRentalsHandlers.callbackQuery(/^ext:paid:(\d+)$/, async (ctx) => {
     `✅ <b>Оплата за продление отправлена на проверку</b>\n\n` +
     `🏄 Доска: <b>${rental.board.code}</b>\n` +
     `⏱ Продление: <b>+${fmtDuration(rental.pendingExtraMinutes)}</b>\n` +
-    `💰 Сумма: <b>${fmtPrice(extensionTariff.price)}</b>\n\n` +
+    `💰 Сумма: <b>${fmtPrice(finalExtPrice)}</b>\n\n` +
     `Ожидайте подтверждения.`,
     {
       parse_mode: "HTML",

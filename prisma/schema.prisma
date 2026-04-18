@@ -70,17 +70,25 @@ enum AuditAction {
   ROLE_CHANGED
   MODE_TOGGLED
   QR_UPDATED
+  TARIFF_CREATED
+  TARIFF_UPDATED
+  TARIFF_DELETED
+  DISCOUNT_SET
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  tgId      BigInt   @unique
-  role      Role     @default(CLIENT)
-  name      String
-  phone     String?
-  spotId    Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              Int      @id @default(autoincrement())
+  tgId            BigInt   @unique
+  role            Role     @default(CLIENT)
+  name            String
+  phone           String?
+  spotId          Int?
+  /// Персональная скидка в процентах (0..100). Применяется ко всем новым арендам/продлениям.
+  discountPercent Int      @default(0)
+  /// Причина/комментарий к скидке (для аудита, отображается админу).
+  discountNote    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   spot           Spot?          @relation(fields: [spotId], references: [id])
   bookings       Booking[]
@@ -165,6 +173,15 @@ model Rental {
   extraMinutes        Int          @default(0)
   extraCost           Int          @default(0)
   pendingExtraMinutes Int?
+  /// Сумма к оплате за продление, зафиксированная в момент запроса (снапшот).
+  /// Используется, чтобы изменение цены тарифа не влияло на уже запрошенное продление.
+  pendingExtraAmount  Int?
+  /// Цена тарифа в момент создания аренды (снапшот, без учёта скидки). null для старых записей.
+  tariffPriceKgs      Int?
+  /// Фактическая цена базовой аренды после применения скидки клиента. null для старых записей.
+  basePriceKgs        Int?
+  /// Снапшот процента скидки клиента на момент создания аренды.
+  discountPercent     Int          @default(0)
   status              RentalStatus @default(CREATED)
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt

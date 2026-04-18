@@ -1,44 +1,84 @@
 import { Context, SessionFlavor } from "grammy";
 import { Role } from "@prisma/client";
 
+/** Состояние чата админа с клиентом (discriminated union) */
+export type AdminChatState =
+  | { mode: 'payment'; clientTgId: number; proofId: number }
+  | { mode: 'extension'; clientTgId: number; rentalId: number }
+  | undefined;
+
+/** Состояние чата клиента с админом (discriminated union) */
+export type ClientChatState =
+  | { mode: 'payment'; proofId: number }
+  | { mode: 'extension'; rentalId: number }
+  | undefined;
+
+/** Режим ввода текста — определяет, как обрабатывать message:text */
+export type InputMode =
+  | 'walkin_name'         // Ожидание имени клиента для walk-in
+  | 'board_code'          // Ожидание ввода кода доски
+  | 'mbank_qr'            // Ожидание фото MBank QR
+  | 'board_msg'           // Ожидание сообщения клиенту доски
+  | 'reject_reason'       // Ожидание причины отклонения
+  | 'tariff_text'         // Тариф: ввод кастомного значения (имя/длительность/цена)
+  | 'rental_discount_pct' // Скидка на аренду: ввод процента вручную
+  | 'rental_discount_amt' // Скидка на аренду: ввод суммы в сомах
+  | undefined;
+
+/** Черновик создания/редактирования тарифа — управляется кнопочным пикером */
+export interface TariffDraft {
+  mode: 'create' | 'edit';
+  spotId: number;
+  tariffId?: number;
+  /** рабочие значения пикера */
+  name?: string;
+  durationMinutes?: number;
+  price?: number;
+  /** поле, для которого ожидается кастомный текстовый ввод */
+  pendingField?: 'name' | 'duration' | 'price';
+}
+
+/** Черновик скидки на конкретную аренду (для multi-step ввода в разделе «Доски») */
+export interface RentalDiscountDraft {
+  rentalId: number;
+}
+
 export interface SessionData {
   /** internal user id from DB */
   userId?: number;
   role?: Role;
   spotId?: number;
+
   /** walk-in rental flow state */
   walkin?: {
     boardId?: number;
     tariffId?: number;
   };
-  /** client waiting to type board code */
-  waitingBoardCode?: boolean;
-  /** admin waiting to send MBank QR photo */
-  waitingMBankQR?: boolean;
-  /**
-   * Chat mode discriminator to avoid state ambiguity.
-   * 'payment' = admin↔client chat about a payment proof
-   * 'extension' = admin↔client chat about a rental extension
-   */
-  chatMode?: 'payment' | 'extension';
-  /** admin↔client chat: admin writing to a client about a proof */
-  chatWithClientTgId?: number;
-  chatProofId?: number;
-  /** admin↔client chat about rental extension */
-  chatRentalId?: number;
-  /** client replying to admin about a proof */
-  chatWithAdminTgId?: number;
-  chatReplyProofId?: number;
-  /** client replying to admin about extension */
-  chatReplyRentalId?: number;
+
+  /** Режим ввода текста (вместо множества boolean-флагов) */
+  inputMode?: InputMode;
+
+  /** Чат админа с клиентом (discriminated union по mode) */
+  adminChat?: AdminChatState;
+
+  /** Чат клиента с админом (discriminated union по mode) */
+  clientChat?: ClientChatState;
+
   /** tracked bot message IDs for auto-cleanup */
   lastBotMsgIds?: number[];
   /** tracked cashier payment message IDs (individual cards) */
   cashierMsgIds?: number[];
+
   /** ID чека, для которого ожидается ввод причины отклонения */
   rejectProofId?: number;
   /** ID аренды, для которой админ пишет сообщение клиенту */
   boardMsgRentalId?: number;
+
+  /** Черновик тарифа при создании/редактировании админом */
+  tariffDraft?: TariffDraft;
+
+  /** Черновик скидки на аренду (из раздела «Доски») */
+  rentalDiscountDraft?: RentalDiscountDraft;
 }
 
 export type BotContext = Context &
@@ -51,5 +91,6 @@ export type BotContext = Context &
       name: string;
       phone: string | null;
       spotId: number | null;
+      discountPercent: number;
     };
   };

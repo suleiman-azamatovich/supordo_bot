@@ -12,7 +12,7 @@ import { InlineKeyboard, InputFile } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { BoardStatus, Role } from "@prisma/client";
-import { fmtPrice, fmtDuration } from "../../ui/helpers";
+import { fmtPrice, fmtDuration, escapeHtml } from "../../ui/helpers";
 
 /** Путь к файлу QR-кода MBank на диске */
 const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "IMG-20260406-WA0012.jpg");
@@ -111,38 +111,33 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
     include: { user: true },
   });
 
-  let refText = "";
+  // Загружаем связанную аренду один раз — нужна для всех типов proof.kind
+  const relatedRental = await prisma.rental.findUnique({
+    where: { id: proof.refId },
+    include: { board: true, spot: true },
+  });
+
+  let refText: string;
   if (proof.kind === "RENTAL") {
-    const rental = await prisma.rental.findUnique({
-      where: { id: proof.refId },
-      include: { board: true, spot: true },
-    });
-    refText = rental
-      ? `Аренда #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
+    refText = relatedRental
+      ? `Аренда #${relatedRental.id}\nДоска: ${relatedRental.board.code}\nТочка: ${escapeHtml(relatedRental.spot.name)}`
       : `Аренда #${proof.refId}`;
   } else if (proof.kind === "OVERDUE") {
-    const rental = await prisma.rental.findUnique({
-      where: { id: proof.refId },
-      include: { board: true, spot: true },
-    });
-    refText = rental
-      ? `⏰ Просрочка по аренде #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
+    refText = relatedRental
+      ? `⏰ Просрочка по аренде #${relatedRental.id}\nДоска: ${relatedRental.board.code}\nТочка: ${escapeHtml(relatedRental.spot.name)}`
       : `Просрочка по аренде #${proof.refId}`;
   } else if (proof.kind === "EXTENSION") {
-    const rental = await prisma.rental.findUnique({
-      where: { id: proof.refId },
-      include: { board: true, spot: true },
-    });
-    refText = rental
-      ? `⏱ Продление аренды #${rental.id}\nДоска: ${rental.board.code}\nТочка: ${rental.spot.name}`
+    refText = relatedRental
+      ? `⏱ Продление аренды #${relatedRental.id}\nДоска: ${relatedRental.board.code}\nТочка: ${escapeHtml(relatedRental.spot.name)}`
       : `Продление аренды #${proof.refId}`;
   } else {
     refText = `Платёж #${proof.refId}`;
   }
 
+  const userName = escapeHtml(proof.user.name);
   const text =
     `💳 <b>Новая заявка на оплату #${proof.id}</b>\n\n` +
-    `👤 ${proof.user.name} (tg: ${proof.user.tgId})\n` +
+    `👤 ${userName} (tg: ${proof.user.tgId})\n` +
     `📋 ${refText}\n` +
     `💰 Сумма: ${fmtPrice(proof.amount)}`;
 
@@ -160,22 +155,22 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
       },
     });
 
-    // Push-сообщение отправляем только кассирам, админам — только уведомление в колокольчик
-    if (user.role !== Role.CASHIER) return;
-
+    // Push-сообщение отправляем и админам, и кассирам — оба могут подтверждать оплаты
     try {
-      proof.fileId
-        ? await ctx.api.sendPhoto(Number(user.tgId), proof.fileId, {
+      if (proof.fileId) {
+        await ctx.api.sendPhoto(Number(user.tgId), proof.fileId, {
           caption: text,
           parse_mode: "HTML",
           reply_markup: kb,
-        })
-        : await ctx.api.sendMessage(Number(user.tgId), text, {
+        });
+      } else {
+        await ctx.api.sendMessage(Number(user.tgId), text, {
           parse_mode: "HTML",
           reply_markup: kb,
         });
+      }
     } catch (e) {
-      console.error(`Failed to notify user ${user.tgId}:`, e);
+      console.error(`[notify] Не удалось отправить push ${user.tgId}:`, e);
     }
   }));
 }

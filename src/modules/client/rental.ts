@@ -20,8 +20,9 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { BoardStatus, Role } from "@prisma/client";
-import { fmtPrice, fmtDuration, fmtDate } from "../../ui/helpers";
+import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
+import { applyDiscount, normalizePercent } from "../../services/pricing";
 import { sendMBankQR, notifyAdminsNewPayment } from "./helpers";
 
 export const rentalHandlers = new Composer<BotContext>();
@@ -44,18 +45,31 @@ rentalHandlers.callbackQuery(/^rent:pick_tariff:(\d+):(\d+)$/, async (ctx) => {
     return ctx.editMessageText("⚠️ Доска уже занята. Попробуйте другую.");
   }
 
+  const discountPct = normalizePercent(ctx.dbUser?.discountPercent ?? 0);
+  const finalPrice = applyDiscount(tariff.price, discountPct);
+
   const kb = new InlineKeyboard()
     .text("✅ Принимаю условия", `rent:accept_safety:${boardId}:${tariffId}`)
     .row()
     .text("⬅️ Назад", `client:board_info:${boardId}`)
     .text("⬅️ Меню", "back:menu");
 
+  let priceBlock: string;
+  if (discountPct > 0) {
+    priceBlock =
+      `💰 Прайс: <s>${fmtPrice(tariff.price)}</s>\n` +
+      `🎁 Ваша скидка: <b>−${discountPct}%</b>\n` +
+      `💳 К оплате: <b>${fmtPrice(finalPrice)}</b>`;
+  } else {
+    priceBlock = `💰 Сумма: <b>${fmtPrice(finalPrice)}</b>`;
+  }
+
   await ctx.editMessageText(
     `📋 <b>Аренда SUP-борда</b>\n\n` +
     `🏄 Доска: <b>${board.code}</b>\n` +
     `📍 Точка: ${board.spot.name}\n` +
     `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})\n` +
-    `💰 Сумма: <b>${fmtPrice(tariff.price)}</b>\n\n` +
+    priceBlock + `\n\n` +
     `⚠️ <b>Памятка по технике безопасности:</b>\n` +
     `1. Обязательно используйте спасательный жилет\n` +
     `2. Не отплывайте далеко от берега\n` +
@@ -97,26 +111,54 @@ rentalHandlers.callbackQuery(/^rent:accept_safety:(\d+):(\d+)$/, async (ctx) => 
       tariffId: tariff.id,
     }));
   } catch {
-    return ctx.editMessageText(
-      "⚠️ Доска уже занята. Попробуйте другую.",
-      { reply_markup: new InlineKeyboard().text("🏄 Доски", "client:boards").text("⬅️ Меню", "back:menu") }
-    );
+    // Доска уже занята: проверим, не наша ли это собственная аренда
+    const activeOwn = await prisma.rental.findFirst({
+      where: {
+        boardId: board.id,
+        userId: ctx.dbUser!.id,
+        status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const kb = new InlineKeyboard();
+    let msg: string;
+    if (activeOwn) {
+      msg =
+        `⚠️ У вас уже есть активная аренда на доске <b>${board.code}</b>.\n\n` +
+        `Откройте её в «Моих арендах», чтобы продолжить.`;
+      kb.text("📋 Мои аренды", "client:my_list").row();
+    } else {
+      msg =
+        `⚠️ Доска <b>${board.code}</b> только что была занята другим клиентом.\n\n` +
+        `Попробуйте выбрать другую свободную доску.`;
+      kb.text("🏄 Другие доски", "client:boards").row();
+    }
+    kb.text("⬅️ Меню", "back:menu");
+
+    return ctx.editMessageText(msg, { parse_mode: "HTML", reply_markup: kb });
   }
 
   await rentalService.moveToWaitPayment(rental.id, ctx.dbUser!.id);
+
+  const priceToPay = rental.basePriceKgs ?? tariff.price;
+  const discountLine =
+    rental.discountPercent > 0
+      ? `\n🎁 Скидка клиента: <b>−${rental.discountPercent}%</b> (прайс ${fmtPrice(tariff.price)})`
+      : "";
 
   await ctx.editMessageText(
     `📋 <b>Аренда #${rental.id}</b>\n\n` +
     `🏄 Доска: ${board.code}\n` +
     `📍 Точка: ${board.spot.name}\n` +
-    `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})\n` +
-    `💰 Сумма: <b>${fmtPrice(tariff.price)}</b>\n\n` +
+    `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})${discountLine}\n` +
+    `💰 К оплате: <b>${fmtPrice(priceToPay)}</b>\n\n` +
     `💳 Оплатите по QR-коду ниже через MBank.\n` +
     `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
     { parse_mode: "HTML" }
   );
 
-  await sendMBankQR(ctx, tariff.price, rental.id);
+  await sendMBankQR(ctx, priceToPay, rental.id);
 });
 
 /**
@@ -146,7 +188,7 @@ rentalHandlers.callbackQuery(/^rent:paid:(\d+)$/, async (ctx) => {
     const { proof } = await rentalService.submitPayment({
       rentalId: rental.id,
       userId: ctx.dbUser!.id,
-      amount: rental.tariff!.price,
+      amount: rental.basePriceKgs ?? rental.tariff!.price,
     });
     proofId = proof.id;
   } else if (rental.status === "WAIT_RETURN" || rental.status === "RETURNED") {
@@ -168,7 +210,7 @@ rentalHandlers.callbackQuery(/^rent:paid:(\d+)$/, async (ctx) => {
     });
   }
 
-  const amount = rental.tariff ? fmtPrice(rental.tariff.price) : "—";
+  const amount = rental.tariff ? fmtPrice(rental.basePriceKgs ?? rental.tariff.price) : "—";
 
   try { await ctx.deleteMessage(); } catch { /* ignore */ }
   await ctx.reply(
@@ -205,10 +247,10 @@ rentalHandlers.callbackQuery(/^rent:paid:(\d+)$/, async (ctx) => {
  */
 rentalHandlers.on("message:photo", async (ctx) => {
   // Если в чате с админом — пересылаем фото
-  if (ctx.session.chatWithAdminTgId && ctx.session.chatReplyProofId) {
-    const proofId = ctx.session.chatReplyProofId;
+  if (ctx.session.clientChat?.mode === 'payment') {
+    const proofId = ctx.session.clientChat.proofId;
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-    const userName = ctx.dbUser?.name ?? "Клиент";
+    const userName = escapeHtml(ctx.dbUser?.name ?? "Клиент");
     try {
       const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
       await Promise.all(admins.map((admin) =>
@@ -248,13 +290,50 @@ rentalHandlers.on("message:photo", async (ctx) => {
   });
 });
 
-/** Отмена аренды (до подтверждения оплаты) */
+/**
+ * Отмена аренды (до подтверждения оплаты) — шаг 1: подтверждение.
+ *
+ * Сообщение с QR-кодом оплаты — это фото; отредактировать его через editMessageText
+ * нельзя, поэтому удаляем старое и показываем экран подтверждения.
+ */
 rentalHandlers.callbackQuery(/^rent:cancel:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  const rental = await prisma.rental.findUnique({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+
+  if (!rental || rental.userId !== ctx.dbUser!.id) {
+    try { await ctx.deleteMessage(); } catch { /* ignore */ }
+    return ctx.reply("⚠️ Аренда не найдена.", {
+      reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
+    });
+  }
+
+  try { await ctx.deleteMessage(); } catch { /* ignore */ }
+
+  const kb = new InlineKeyboard()
+    .text("✅ Да, отменить", `rent:cancel_confirm:${rentalId}`)
+    .text("⬅️ Назад", "back:menu");
+
+  const amount = rental.tariff ? fmtPrice(rental.basePriceKgs ?? rental.tariff.price) : "—";
+  await ctx.reply(
+    `❓ <b>Отменить аренду?</b>\n\n` +
+    `🏄 Доска: <b>${rental.board.code}</b>\n` +
+    `💰 Сумма: ${amount}\n\n` +
+    `После отмены доска снова станет доступна другим клиентам.`,
+    { parse_mode: "HTML", reply_markup: kb },
+  );
+});
+
+/** Отмена аренды — шаг 2: финальное действие */
+rentalHandlers.callbackQuery(/^rent:cancel_confirm:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const rentalId = parseInt(ctx.match[1]);
   try {
     await rentalService.cancelRental(rentalId, ctx.dbUser!.id, true);
-    // Удаляем сообщение (может быть фото с QR) и отправляем новое
     try { await ctx.deleteMessage(); } catch { /* ignore */ }
     await ctx.reply("❌ Аренда отменена.", {
       reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),

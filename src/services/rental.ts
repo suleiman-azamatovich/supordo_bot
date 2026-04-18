@@ -18,6 +18,7 @@ import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../ui/helpers";
 import { resetExpiryTracking } from "./expiry";
+import { applyDiscount, normalizePercent } from "./pricing";
 
 /** Проверяет, включён ли тестовый режим (самый короткий тариф ≤ 3 мин) */
 let _testModeCache: { value: boolean; ts: number } | null = null;
@@ -42,18 +43,18 @@ export function clearTestModeCache() {
 /**
  * Задержка старта таймера после подтверждения оплаты.
  * Даёт время клиенту дойти до доски.
- * @returns Грейс в миллисекундах: 10 сек (тест) | 8 мин (рабочий)
+ * @returns Грейс в миллисекундах: 10 сек (тест) | 3 мин (рабочий)
  */
 export async function getStartGraceMs(): Promise<number> {
-  return (await isTestMode()) ? 10_000 : 8 * 60_000;
+  return (await isTestMode()) ? 10_000 : 3 * 60_000;
 }
 
 /**
  * Грейс-период после окончания аренды до начала начисления просрочки.
- * @returns Грейс в миллисекундах: 10 сек (тест) | 10 мин (рабочий)
+ * @returns Грейс в миллисекундах: 10 сек (тест) | 5 мин (рабочий)
  */
 export async function getEndGraceMs(): Promise<number> {
-  return (await isTestMode()) ? 10_000 : 10 * 60_000;
+  return (await isTestMode()) ? 10_000 : 5 * 60_000;
 }
 
 /**
@@ -67,6 +68,82 @@ export async function getUnpaidTimeoutMs(): Promise<number> {
 
 /** Ставка просрочки (сом за минуту после грейс-периода) */
 export const OVERDUE_RATE_PER_MIN = 10;
+
+/**
+ * Применить скидку к активной аренде.
+ *
+ * Пересчитывает `basePriceKgs` и `discountPercent`. Если есть незакрытый
+ * чек оплаты (SUBMITTED), его сумма тоже обновляется.
+ *
+ * @param rentalId - ID аренды
+ * @param discount - тип `percent` (0..100) или `amount` (сом, 0..listPrice)
+ * @param actorUserId - ID администратора
+ */
+export async function applyRentalDiscount(
+  rentalId: number,
+  discount: { type: "percent"; value: number } | { type: "amount"; value: number },
+  actorUserId: number,
+): Promise<{ basePriceKgs: number; discountPercent: number; savedKgs: number }> {
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { tariff: true },
+  });
+
+  const TERMINAL_STATUSES: RentalStatus[] = [RentalStatus.RETURNED, RentalStatus.CANCELLED];
+  if (TERMINAL_STATUSES.includes(rental.status)) {
+    throw new Error("Нельзя применить скидку к завершённой или отменённой аренде");
+  }
+
+  const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+  if (listPrice <= 0) {
+    throw new Error("Не удалось определить прайс тарифа");
+  }
+
+  let basePriceKgs: number;
+  let discountPercent: number;
+
+  if (discount.type === "percent") {
+    discountPercent = normalizePercent(discount.value);
+    basePriceKgs = applyDiscount(listPrice, discountPercent);
+  } else {
+    const amount = Math.max(0, Math.min(Math.round(discount.value), listPrice));
+    basePriceKgs = listPrice - amount;
+    discountPercent = Math.round((amount * 100) / listPrice);
+  }
+
+  const savedKgs = listPrice - basePriceKgs;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.rental.update({
+      where: { id: rentalId },
+      data: { basePriceKgs, discountPercent },
+    });
+
+    // Обновляем незакрытый чек оплаты за тариф (если клиент ещё не оплатил)
+    await tx.paymentProof.updateMany({
+      where: {
+        refId: rentalId,
+        kind: PaymentProofKind.RENTAL,
+        status: PaymentProofStatus.SUBMITTED,
+      },
+      data: { amount: basePriceKgs },
+    });
+  });
+
+  await audit.log(actorUserId, "Rental", rentalId, AuditAction.TARIFF_UPDATED, {
+    action: "discount_applied",
+    discountType: discount.type,
+    discountValue: discount.value,
+    listPrice,
+    basePriceKgs,
+    discountPercent,
+    savedKgs,
+  });
+
+  return { basePriceKgs, discountPercent, savedKgs };
+}
+
+
 
 /**
  * Создание аренды через бота (онлайн-поток).
@@ -86,9 +163,14 @@ export async function createRental(params: {
   sellerUserId?: number;
   clientName?: string;
 }) {
-  const tariff = await prisma.tariff.findUniqueOrThrow({
-    where: { id: params.tariffId },
-  });
+  const [tariff, clientUser] = await Promise.all([
+    prisma.tariff.findUniqueOrThrow({ where: { id: params.tariffId } }),
+    prisma.user.findUniqueOrThrow({ where: { id: params.userId } }),
+  ]);
+
+  // Снапшот скидки клиента на момент создания (даже если потом админ изменит).
+  const discountPercent = normalizePercent(clientUser.discountPercent);
+  const basePriceKgs = applyDiscount(tariff.price, discountPercent);
 
   const rental = await prisma.$transaction(async (tx) => {
     // Lock the board row to prevent double-booking (SELECT FOR UPDATE)
@@ -107,6 +189,9 @@ export async function createRental(params: {
         tariffId: params.tariffId,
         sellerUserId: params.sellerUserId,
         clientName: params.clientName,
+        tariffPriceKgs: tariff.price,
+        basePriceKgs,
+        discountPercent,
         status: RentalStatus.CREATED,
       },
     });
@@ -122,7 +207,9 @@ export async function createRental(params: {
 
   await audit.log(params.userId, "Rental", rental.id, AuditAction.CREATED, {
     tariffId: tariff.id,
-    price: tariff.price,
+    tariffPrice: tariff.price,
+    basePrice: basePriceKgs,
+    discountPercent,
     sellerUserId: params.sellerUserId,
     clientName: params.clientName,
   });
@@ -142,6 +229,11 @@ export async function createWalkinRental(params: {
     where: { id: params.tariffId },
   });
 
+  // Walk-in аренды оформляются без привязки к конкретному клиентскому профилю
+  // (`userId = sellerUserId`), поэтому персональные скидки не применяются.
+  const discountPercent = 0;
+  const basePriceKgs = tariff.price;
+
   const now = new Date();
   const rental = await prisma.$transaction(async (tx) => {
     // Lock the board row to prevent double-booking (SELECT FOR UPDATE)
@@ -160,6 +252,9 @@ export async function createWalkinRental(params: {
         tariffId: params.tariffId,
         sellerUserId: params.sellerUserId,
         clientName: params.clientName,
+        tariffPriceKgs: tariff.price,
+        basePriceKgs,
+        discountPercent,
         status: RentalStatus.RENTED,
         startAt: now,
       },
@@ -175,7 +270,8 @@ export async function createWalkinRental(params: {
 
   await audit.log(params.sellerUserId, "Rental", rental.id, AuditAction.WALKIN_CREATED, {
     tariffId: tariff.id,
-    price: tariff.price,
+    tariffPrice: tariff.price,
+    basePrice: basePriceKgs,
     clientName: params.clientName,
   });
 
@@ -200,6 +296,7 @@ export async function moveToWaitPayment(rentalId: number, userId: number) {
  *
  * Создаёт PaymentProof со статусом SUBMITTED и переводит аренду в WAIT_ADMIN.
  * Повторная отправка не создаёт дубликат (идемпотентность).
+ * Проверка и создание выполняются атомарно в одной транзакции.
  *
  * @returns proof — объект доказательства оплаты, duplicate — был ли уже отправлен
  */
@@ -210,40 +307,52 @@ export async function submitPayment(params: {
   fileId?: string;
   text?: string;
 }) {
-  // Idempotency: don't create duplicate SUBMITTED proofs
-  const existing = await prisma.paymentProof.findFirst({
-    where: {
-      kind: PaymentProofKind.RENTAL,
-      refId: params.rentalId,
-      status: { in: [PaymentProofStatus.SUBMITTED, PaymentProofStatus.APPROVED] },
-    },
+  // Атомарная проверка + создание в одной транзакции для предотвращения дублей
+  const result = await prisma.$transaction(async (tx) => {
+    // Блокируем строку аренды для сериализации конкурентных отправок
+    await tx.$queryRawUnsafe(
+      `SELECT id FROM "Rental" WHERE id = $1 FOR UPDATE`, params.rentalId
+    );
+
+    // Idempotency: не создаём дубликат SUBMITTED/APPROVED чека
+    const existing = await tx.paymentProof.findFirst({
+      where: {
+        kind: PaymentProofKind.RENTAL,
+        refId: params.rentalId,
+        status: { in: [PaymentProofStatus.SUBMITTED, PaymentProofStatus.APPROVED] },
+      },
+    });
+    if (existing) {
+      return { proof: existing, duplicate: true };
+    }
+
+    const proof = await tx.paymentProof.create({
+      data: {
+        kind: PaymentProofKind.RENTAL,
+        refId: params.rentalId,
+        amount: params.amount,
+        fileId: params.fileId,
+        text: params.text,
+        userId: params.userId,
+      },
+    });
+
+    await tx.rental.update({
+      where: { id: params.rentalId },
+      data: { status: RentalStatus.WAIT_ADMIN },
+    });
+
+    return { proof, duplicate: false };
   });
-  if (existing) {
-    return { proof: existing, duplicate: true };
+
+  if (!result.duplicate) {
+    await audit.log(params.userId, "PaymentProof", result.proof.id, AuditAction.SUBMITTED, {
+      rentalId: params.rentalId,
+      amount: params.amount,
+    });
   }
 
-  const proof = await prisma.paymentProof.create({
-    data: {
-      kind: PaymentProofKind.RENTAL,
-      refId: params.rentalId,
-      amount: params.amount,
-      fileId: params.fileId,
-      text: params.text,
-      userId: params.userId,
-    },
-  });
-
-  await prisma.rental.update({
-    where: { id: params.rentalId },
-    data: { status: RentalStatus.WAIT_ADMIN },
-  });
-
-  await audit.log(params.userId, "PaymentProof", proof.id, AuditAction.SUBMITTED, {
-    rentalId: params.rentalId,
-    amount: params.amount,
-  });
-
-  return { proof, duplicate: false };
+  return result;
 }
 
 /**
@@ -299,51 +408,54 @@ export async function acceptReturn(rentalId: number, sellerUserId: number) {
 }
 
 /**
- * Complete return flow: calculate overdue, accept return, create overdue proof if needed.
- * Returns all data needed by the caller (receipt, overdueCost, client info).
+ * Завершение аренды: расчёт просрочки + возврат доски в одной транзакции.
+ *
+ * Блокирует строку аренды через SELECT FOR UPDATE, считает просрочку
+ * и атомарно выполняет возврат. Предотвращает race condition при
+ * конкурентном нажатии кнопки возврата.
  */
 export async function completeReturn(rentalId: number, actorUserId: number) {
-  // Calculate overdue BEFORE completing return
-  const rentalBefore = await prisma.rental.findUniqueOrThrow({
-    where: { id: rentalId },
-    include: { board: true, tariff: true, user: true },
-  });
+  const result = await prisma.$transaction(async (tx) => {
+    // Блокируем строку аренды для предотвращения двойного завершения
+    await tx.$queryRawUnsafe(
+      `SELECT id FROM "Rental" WHERE id = $1 FOR UPDATE`, rentalId
+    );
 
-  if (!['RENTED', 'WAIT_RETURN'].includes(rentalBefore.status)) {
-    throw new Error('Аренда уже завершена или отменена');
-  }
+    const rentalBefore = await tx.rental.findUniqueOrThrow({
+      where: { id: rentalId },
+      include: { board: true, tariff: true, user: true },
+    });
 
-  const { overdueCost } = await calculateOverdueCost(rentalBefore);
+    if (!['RENTED', 'WAIT_RETURN'].includes(rentalBefore.status)) {
+      throw new Error('Аренда уже завершена или отменена');
+    }
 
-  // Атомарная транзакция: возврат + освобождение доски
-  // overdueCost НЕ добавляется в extraCost — просрочка оплачивается отдельно
-  // через PaymentProof(OVERDUE) в return:invoice, или списывается при return:complete
-  await prisma.$transaction(async (tx) => {
-    await tx.rental.update({
+    // Расчёт просрочки внутри транзакции — данные консистентны
+    const { overdueCost } = await calculateOverdueCost(rentalBefore);
+
+    const rental = await tx.rental.update({
       where: { id: rentalId },
       data: {
         status: RentalStatus.RETURNED,
         endAt: new Date(),
       },
+      include: { board: true, user: true },
     });
 
     await tx.board.update({
       where: { id: rentalBefore.boardId },
       data: { status: BoardStatus.AVAILABLE },
     });
+
+    return { rental, overdueCost, clientTgId: rental.user.tgId, boardCode: rentalBefore.board.code };
   });
 
   await audit.log(actorUserId, "Rental", rentalId, AuditAction.RETURNED, {
-    overdueCost,
-    boardCode: rentalBefore.board.code,
+    overdueCost: result.overdueCost,
+    boardCode: result.boardCode,
   });
 
-  const rental = await prisma.rental.findUniqueOrThrow({
-    where: { id: rentalId },
-    include: { board: true, user: true },
-  });
-
-  return { rental, overdueCost, clientTgId: rental.user.tgId };
+  return { rental: result.rental, overdueCost: result.overdueCost, clientTgId: result.clientTgId };
 }
 
 /**
@@ -352,73 +464,91 @@ export async function completeReturn(rentalId: number, actorUserId: number) {
  * Если аренда в просрочке — продление сначала покрывает просроченные минуты.
  * Возвращает аренду в статус RENTED (если была WAIT_RETURN).
  *
+ * Оборачивается в транзакцию с SELECT FOR UPDATE для защиты от двойного продления.
+ *
  * @param rentalId - ID аренды
  * @param minutes - Количество минут продления
  * @param userId - ID пользователя, инициирующего продление
  * @param extensionCost - Стоимость продления (опционально)
+ * @param requirePending - Если true, проверяет pendingExtraMinutes внутри транзакции (защита от двойного apply)
  * @returns Обновлённая аренда с данными о просрочке
  */
-export async function extendRental(rentalId: number, minutes: number, userId: number, extensionCost?: number) {
-  const rental = await prisma.rental.findUniqueOrThrow({
-    where: { id: rentalId },
-    include: { tariff: true, board: true },
-  });
+export async function extendRental(rentalId: number, minutes: number, userId: number, extensionCost?: number, requirePending = false) {
+  // Получаем endGraceMs до транзакции (не блокирует строки)
+  const endGraceMs = await getEndGraceMs();
 
-  if (!['RENTED', 'WAIT_RETURN'].includes(rental.status)) {
-    throw new Error('Продлить можно только активную аренду');
-  }
+  const result = await prisma.$transaction(async (tx) => {
+    // Блокируем строку аренды от конкурентных обновлений
+    await tx.$queryRaw`SELECT id FROM "Rental" WHERE id = ${rentalId} FOR UPDATE`;
 
-  // Calculate overdue — if overdue, extension covers it first
-  let overdueMinutes = 0;
-  if (rental.startAt && rental.tariff) {
-    const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
-    const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
-    const endGraceMs = await getEndGraceMs();
-    const graceEnd = new Date(endAt.getTime() + endGraceMs);
-    const now = new Date();
-    if (now > graceEnd) {
-      overdueMinutes = Math.ceil((now.getTime() - graceEnd.getTime()) / 60_000);
-    }
-  }
-
-  // Calculate cost: use provided cost or fall back to tariff price
-  const cost = extensionCost ?? 0;
-
-  const newExtra = (rental.extraMinutes ?? 0) + minutes;
-  const netMinutes = Math.max(0, minutes - overdueMinutes);
-
-  // Статус: RENTED только если продление даёт чистое время.
-  // Если всё ушло на покрытие просрочки — оставляем текущий статус.
-  const newStatus = netMinutes > 0 ? RentalStatus.RENTED : rental.status;
-
-  const updated = await prisma.rental.update({
-    where: { id: rentalId },
-    data: {
-      extraMinutes: newExtra,
-      extraCost: { increment: cost },
-      pendingExtraMinutes: null,
-      status: newStatus,
-    },
-  });
-
-  if (netMinutes > 0) {
-    await prisma.board.update({
-      where: { id: rental.boardId },
-      data: { status: BoardStatus.RENTED },
+    const rental = await tx.rental.findUniqueOrThrow({
+      where: { id: rentalId },
+      include: { tariff: true, board: true },
     });
-    // Сбросить трекинг уведомлений — expiry checker пересчитает по новому сроку
+
+    if (!['RENTED', 'WAIT_RETURN'].includes(rental.status)) {
+      throw new Error('Продлить можно только активную аренду');
+    }
+
+    // Защита от двойного применения продления (race condition pay:approve + ext:approve)
+    if (requirePending && rental.pendingExtraMinutes == null) {
+      throw new Error('Продление уже было обработано');
+    }
+
+    // Расчёт просрочки — extension сначала покрывает просроченные минуты
+    let overdueMinutes = 0;
+    if (rental.startAt && rental.tariff) {
+      const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
+      const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+      const graceEnd = new Date(endAt.getTime() + endGraceMs);
+      const now = new Date();
+      if (now > graceEnd) {
+        overdueMinutes = Math.ceil((now.getTime() - graceEnd.getTime()) / 60_000);
+      }
+    }
+
+    const cost = extensionCost ?? 0;
+    const newExtra = (rental.extraMinutes ?? 0) + minutes;
+    const netMinutes = Math.max(0, minutes - overdueMinutes);
+
+    // RENTED только если продление даёт чистое время
+    const newStatus = netMinutes > 0 ? RentalStatus.RENTED : rental.status;
+
+    const updated = await tx.rental.update({
+      where: { id: rentalId },
+      data: {
+        extraMinutes: newExtra,
+        extraCost: { increment: cost },
+        pendingExtraMinutes: null,
+        pendingExtraAmount: null,
+        status: newStatus,
+      },
+    });
+
+    if (netMinutes > 0) {
+      await tx.board.update({
+        where: { id: rental.boardId },
+        data: { status: BoardStatus.RENTED },
+      });
+    }
+
+    return { updated, overdueMinutes, netMinutes, cost };
+  });
+
+  // Сбросить трекинг уведомлений — expiry checker пересчитает по новому сроку
+  if (result.netMinutes > 0) {
     resetExpiryTracking(rentalId);
   }
 
   await audit.log(userId, 'Rental', rentalId, AuditAction.EXTENDED, {
     addedMinutes: minutes,
-    extensionCost: cost,
-    overdueMinutes,
-    netMinutes,
-    totalExtra: newExtra,
+    extensionCost: result.cost,
+    overdueMinutes: result.overdueMinutes,
+    netMinutes: result.netMinutes,
+    totalExtra: (result.updated.extraMinutes ?? 0),
   });
 
-  return { ...updated, overdueMinutes, netMinutes, extensionCost: cost };
+  return { ...result.updated, overdueMinutes: result.overdueMinutes, netMinutes: result.netMinutes, extensionCost: result.cost };
 }
 
 /** Get current overdue minutes for a rental */
@@ -443,7 +573,12 @@ export async function getOverdueMinutes(rental: {
 
 /** Close overdue by adding exact overdue minutes as extension (no net gain) */
 export async function closeOverdue(rentalId: number, userId: number) {
+  // Вычисляем endGraceMs до транзакции чтобы избежать deadlock
+  const endGraceMs = await getEndGraceMs();
+
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Rental" WHERE id = ${rentalId} FOR UPDATE`;
+
     const rental = await tx.rental.findUniqueOrThrow({
       where: { id: rentalId },
       include: { tariff: true, board: true },
@@ -453,13 +588,25 @@ export async function closeOverdue(rentalId: number, userId: number) {
       throw new Error('Нет просрочки для закрытия');
     }
 
-    const overdue = await getOverdueMinutes(rental);
+    // Расчёт просрочки с предвычисленным грейсом
+    let overdue = 0;
+    if (rental.startAt && rental.tariff) {
+      const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
+      const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
+      const graceEnd = new Date(endAt.getTime() + endGraceMs);
+      const now = new Date();
+      if (now > graceEnd) {
+        overdue = Math.ceil((now.getTime() - graceEnd.getTime()) / 60_000);
+      }
+    }
+
     if (overdue <= 0) {
       throw new Error('Нет просрочки для закрытия');
     }
 
-    // Calculate overdue cost — фиксированные 10 сом/мин
-    const overdueCost = overdue * OVERDUE_RATE_PER_MIN;
+    // Calculate overdue cost с учётом скидки клиента (снапшот в Rental.discountPercent)
+    const grossCost = overdue * OVERDUE_RATE_PER_MIN;
+    const overdueCost = applyDiscount(grossCost, rental.discountPercent ?? 0);
 
     const newExtra = (rental.extraMinutes ?? 0) + overdue;
 
@@ -538,8 +685,11 @@ export async function requestCloseOverdue(rentalId: number, userId: number) {
   return { proof, overdueCost, overdueMinutes, duplicate: false };
 }
 
-/** Client requests extension — needs admin approval */
-export async function requestExtend(rentalId: number, minutes: number, userId: number) {
+/** Client requests extension — needs admin approval.
+ * Фиксирует запрошенные минуты и сумму в снапшотах Rental,
+ * чтобы изменение цены тарифа не повлияло на уже запрошенное продление.
+ */
+export async function requestExtend(rentalId: number, minutes: number, userId: number, amountKgs: number) {
   const rental = await prisma.rental.findUniqueOrThrow({
     where: { id: rentalId },
   });
@@ -554,11 +704,12 @@ export async function requestExtend(rentalId: number, minutes: number, userId: n
 
   const updated = await prisma.rental.update({
     where: { id: rentalId },
-    data: { pendingExtraMinutes: minutes },
+    data: { pendingExtraMinutes: minutes, pendingExtraAmount: amountKgs },
   });
 
   await audit.log(userId, 'Rental', rentalId, AuditAction.EXTEND_REQUESTED, {
     requestedMinutes: minutes,
+    amountKgs,
   });
 
   return updated;
@@ -568,23 +719,30 @@ export async function requestExtend(rentalId: number, minutes: number, userId: n
 export async function rejectExtend(rentalId: number, adminUserId: number) {
   const updated = await prisma.rental.update({
     where: { id: rentalId },
-    data: { pendingExtraMinutes: null },
+    data: { pendingExtraMinutes: null, pendingExtraAmount: null },
   });
 
   await audit.log(adminUserId, 'Rental', rentalId, AuditAction.EXTEND_REJECTED);
   return updated;
 }
 
-/** Calculate overdue cost for an active rental (before return) */
+/**
+ * Расчёт стоимости просрочки для активной аренды (до возврата).
+ *
+ * Учитывает снапшот скидки клиента (`rental.discountPercent`): если у клиента
+ * есть персональная скидка, она применяется и к оплате просрочки.
+ */
 export async function calculateOverdueCost(rental: {
   startAt: Date | null;
   tariff: { durationMinutes: number; price: number } | null;
   extraMinutes: number;
   status: string;
-}): Promise<{ overdueMinutes: number; overdueCost: number }> {
+  discountPercent?: number | null;
+}): Promise<{ overdueMinutes: number; overdueCost: number; overdueCostGross: number }> {
   const overdueMinutes = await getOverdueMinutes(rental);
-  const overdueCost = overdueMinutes * OVERDUE_RATE_PER_MIN;
-  return { overdueMinutes, overdueCost };
+  const gross = overdueMinutes * OVERDUE_RATE_PER_MIN;
+  const overdueCost = applyDiscount(gross, rental.discountPercent ?? 0);
+  return { overdueMinutes, overdueCost, overdueCostGross: gross };
 }
 
 const CANCELLABLE_STATUSES: RentalStatus[] = [
@@ -641,11 +799,19 @@ export async function cancelRental(rentalId: number, userId: number, requireOwne
     await tx.paymentProof.updateMany({
       where: {
         refId: rentalId,
-        kind: { in: [PaymentProofKind.RENTAL, PaymentProofKind.OVERDUE] },
+        kind: { in: [PaymentProofKind.RENTAL, PaymentProofKind.OVERDUE, PaymentProofKind.EXTENSION] },
         status: PaymentProofStatus.SUBMITTED,
       },
       data: { status: PaymentProofStatus.REJECTED },
     });
+
+    // Сбросить pending extension если было
+    if (r.pendingExtraMinutes != null) {
+      await tx.rental.update({
+        where: { id: rentalId },
+        data: { pendingExtraMinutes: null, pendingExtraAmount: null },
+      });
+    }
 
     return r;
   });
@@ -677,7 +843,11 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
 
   // Time breakdown
   const baseDuration = rental.tariff?.durationMinutes ?? 0;
-  const basePrice = rental.tariff?.price ?? 0;
+  // Используем снапшот (basePriceKgs) — цена с учётом скидки, зафиксированной
+  // на момент создания аренды. Для старых записей fallback на tariff.price.
+  const tariffListPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+  const basePrice = rental.basePriceKgs ?? tariffListPrice;
+  const discountPct = rental.discountPercent ?? 0;
   const extra = rental.extraMinutes ?? 0;
   const extraCost = rental.extraCost ?? 0;
   const totalPaidMinutes = baseDuration + extra;
@@ -694,12 +864,11 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
   // Actual usage & overdue
   const endGraceMs = await getEndGraceMs();
   const endGraceMin = endGraceMs / 60_000;
-  let overdueAtReturn = 0;
   if (rental.startAt && rental.endAt) {
     const actualMin = Math.ceil((rental.endAt.getTime() - rental.startAt.getTime()) / 60_000);
     text += `   Фактическое время: <b>${fmtDuration(actualMin)}</b>\n`;
     const rawOverdue = actualMin - totalPaidMinutes - endGraceMin;
-    overdueAtReturn = Math.max(0, Math.ceil(rawOverdue));
+    const overdueAtReturn = Math.max(0, Math.ceil(rawOverdue));
     if (overdueAtReturn > 0) {
       text += `   ⚠️ Просрочка: <b>${fmtDuration(overdueAtReturn)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
     }
@@ -711,7 +880,6 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
     const rawOverdue = actualMin - totalPaidMinutes - endGraceMin;
     const currentOverdue = Math.max(0, Math.ceil(rawOverdue));
     if (currentOverdue > 0) {
-      overdueAtReturn = currentOverdue;
       text += `   ⚠️ Просрочка: <b>${fmtDuration(currentOverdue)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
     }
   }
@@ -720,7 +888,15 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
   const totalCost = basePrice + extraCost + overdueBilled;
 
   text += `\n<b>💰 Стоимость:</b>\n`;
-  text += `   Тариф: ${fmtPrice(basePrice)}\n`;
+  if (tariffListPrice > basePrice) {
+    const savedKgs = tariffListPrice - basePrice;
+    const pctLabel = discountPct > 0 ? ` −${discountPct}%` : "";
+    text += `   Тариф (прайс): ${fmtPrice(tariffListPrice)}\n`;
+    text += `   🎁 Скидка:${pctLabel} <b>−${fmtPrice(savedKgs)}</b>\n`;
+    text += `   Тариф со скидкой: ${fmtPrice(basePrice)}\n`;
+  } else {
+    text += `   Тариф: ${fmtPrice(basePrice)}\n`;
+  }
   if (extraCost > 0) {
     text += `   Доплаты (продления): +${fmtPrice(extraCost)}\n`;
   }

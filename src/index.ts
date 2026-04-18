@@ -13,7 +13,7 @@ import { Bot, session, Composer } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
 import { BotContext, SessionData } from "./bot/context";
 import { config } from "./bot/config";
-import { authMiddleware, chatCleanupMiddleware, guardRole } from "./bot/middleware";
+import { authMiddleware, chatCleanupMiddleware, guardRole, rateLimitMiddleware, startMiddlewareMaintenance } from "./bot/middleware";
 import { clientModule } from "./modules/client/index";
 import { adminModule } from "./modules/admin/index";
 import { cashierModule } from "./modules/cashier/index";
@@ -38,11 +38,19 @@ async function main() {
   // Auth — populate dbUser on every update
   bot.use(authMiddleware);
 
+  // Rate limiting for callback queries
+  bot.use(rateLimitMiddleware);
+
   // Auto-cleanup old messages
   bot.use(chatCleanupMiddleware);
 
   // Error handler
   bot.catch((err) => {
+    // Игнорируем просроченные callback-запросы (нажатые пока бот был выключен)
+    const desc = (err.error as any)?.description ?? "";
+    if (typeof desc === "string" && desc.includes("query is too old")) {
+      return;
+    }
     console.error("Bot error:", err);
   });
 
@@ -71,21 +79,43 @@ async function main() {
   console.log(`⚙️ Режим: ${testMode ? "🧪 ТЕСТОВЫЙ" : "🟢 РАБОЧИЙ"}`);
 
   // Запуск автоматического завершения истёкших аренд
-  startExpiryChecker(bot.api);
+  const stopExpiryChecker = startExpiryChecker(bot.api);
+  // Периодическая очистка in-memory кешей middleware (защита от утечек памяти)
+  const stopMiddlewareMaintenance = startMiddlewareMaintenance();
 
   // Run with concurrent update processing
   const runner = run(bot);
   console.log("✅ Bot started (runner mode)");
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`\n${signal} received — shutting down...`);
-    runner.isRunning() && runner.stop();
-    await prisma.$disconnect();
+    try {
+      if (runner.isRunning()) await runner.stop();
+    } catch (e) {
+      console.error("Runner stop error:", e);
+    }
+    stopExpiryChecker();
+    stopMiddlewareMaintenance();
+    try {
+      await prisma.$disconnect();
+    } catch (e) {
+      console.error("Prisma disconnect error:", e);
+    }
     console.log("👋 Graceful shutdown complete.");
     process.exit(0);
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // Не допускаем молчаливых необработанных ошибок — логируем, чтобы не копить zombie-промисы
+  process.on("unhandledRejection", (reason) => {
+    console.error("[unhandledRejection]", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[uncaughtException]", err);
+  });
 }
 
 main().catch((e) => {

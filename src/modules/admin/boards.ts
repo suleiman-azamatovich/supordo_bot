@@ -160,7 +160,13 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b>\n`;
         }
         if (rental.tariff) {
-          text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+          const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
+          const netPrice = rental.basePriceKgs ?? listPrice;
+          if ((rental.discountPercent ?? 0) > 0) {
+            text += `💰 Тариф: ${rental.tariff.name} — <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(netPrice)}</b> 🎁 −${rental.discountPercent}%\n`;
+          } else {
+            text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(netPrice)}\n`;
+          }
         }
         text += `📅 Создана: ${fmtDate(rental.createdAt)}\n`;
 
@@ -196,7 +202,13 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
         if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
         if (rental.tariff) {
           const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
-          text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+          const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
+          const netPrice = rental.basePriceKgs ?? listPrice;
+          if ((rental.discountPercent ?? 0) > 0) {
+            text += `💰 Тариф: ${rental.tariff.name} — <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(netPrice)}</b> 🎁 −${rental.discountPercent}%\n`;
+          } else {
+            text += `💰 Тариф: ${rental.tariff.name} — ${fmtPrice(netPrice)}\n`;
+          }
           if (rental.startAt) {
             const endAt = new Date(rental.startAt.getTime() + totalMin * 60_000);
             const now = new Date();
@@ -226,6 +238,11 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           kb.text("📩 Напомнить клиенту", `admin:remind_active:${rental.id}`).row();
         }
         kb.text("⏱ Продлить", `admin:extend:${rental.id}`).row();
+        const hasDiscount = (rental.discountPercent ?? 0) > 0;
+        const discountBtnLabel = hasDiscount
+          ? `🎁 Изменить скидку (−${rental.discountPercent}%)`
+          : "🎁 Выдать скидку";
+        kb.text(discountBtnLabel, `admin:board_discount:${rental.id}`).row();
         kb.text("✅ Принять доску", `return:confirm:${rental.id}`).row();
         if (!isWalkin) {
           kb.text("✉️ Написать клиенту", `admin:board_msg:${rental.id}`).row();
@@ -346,8 +363,237 @@ boardsHandlers.callbackQuery(/^admin:board_msg:(\d+)$/, async (ctx) => {
   );
 });
 
-/** Обработка текста — отправка сообщения клиенту доски */
+/** Меню выдачи скидки на активную аренду */
+boardsHandlers.callbackQuery(/^admin:board_discount:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+  ctx.session.rentalDiscountDraft = undefined;
+  ctx.session.inputMode = undefined;
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+
+  const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+  const currentBase = rental.basePriceKgs ?? listPrice;
+  const currentSaved = listPrice - currentBase;
+  const hasDiscount = currentSaved > 0;
+
+  let text = hasDiscount
+    ? `🎁 <b>Изменить скидку — аренда #${rental.id}</b>\n\n`
+    : `🎁 <b>Выдать скидку — аренда #${rental.id}</b>\n\n`;
+  text += `🏄 Доска: <b>${rental.board.code}</b>\n`;
+  if (rental.tariff) {
+    text += `⏱ Тариф: ${rental.tariff.name}  ·  💰 Прайс: ${fmtPrice(listPrice)}\n`;
+  }
+  if (currentSaved > 0) {
+    const pct = rental.discountPercent ?? 0;
+    const pctLabel = pct > 0 ? ` −${pct}%` : "";
+    text += `✅ Текущая скидка:${pctLabel} <b>−${fmtPrice(currentSaved)}</b>  →  к оплате: <b>${fmtPrice(currentBase)}</b>\n`;
+  } else {
+    text += `<i>Скидка ещё не установлена.</i>\n`;
+  }
+
+  const kb = new InlineKeyboard();
+  // Пресеты
+  for (const pct of [10, 20, 30]) {
+    const discounted = Math.round(listPrice * (100 - pct) / 100);
+    kb.text(`${pct}%  (${fmtPrice(discounted)})`, `admin:bd_pct:${rentalId}:${pct}`);
+  }
+  kb.row();
+  kb.text("✏️ Свой %", `admin:bd_custom_pct:${rentalId}`)
+    .text("💰 Сумма (сом)", `admin:bd_custom_amt:${rentalId}`).row();
+  if (currentSaved > 0) {
+    kb.text("❌ Убрать скидку", `admin:bd_pct:${rentalId}:0`).row();
+  }
+  kb.text("⬅️ К доске", `admin:board_detail:${rental.boardId}`);
+
+  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+});
+
+/** Применить пресет (или сброс) скидки по проценту */
+boardsHandlers.callbackQuery(/^admin:bd_pct:(\d+):(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+  const pct = parseInt(ctx.match[2]);
+
+  try {
+    const rental = await prisma.rental.findUniqueOrThrow({
+      where: { id: rentalId },
+      include: { board: true, user: true, tariff: true },
+    });
+
+    const { basePriceKgs, discountPercent, savedKgs } =
+      await rentalService.applyRentalDiscount(rentalId, { type: "percent", value: pct }, ctx.dbUser!.id);
+
+    // Уведомляем клиента
+    const prevSaved = (rental.tariffPriceKgs ?? rental.tariff?.price ?? 0) - (rental.basePriceKgs ?? rental.tariffPriceKgs ?? rental.tariff?.price ?? 0);
+    const hadDiscount = prevSaved > 0;
+    if (!rental.sellerUserId && rental.user.tgId) {
+      const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+      if (savedKgs > 0) {
+        const pctLabel = discountPercent > 0 ? ` (−${discountPercent}%)` : "";
+        const title = hadDiscount
+          ? `🎁 <b>Администратор обновил вашу скидку!</b>`
+          : `🎁 <b>Администратор выдал вам скидку!</b>`;
+        await notify(
+          ctx.api,
+          Number(rental.user.tgId),
+          `${title}\n\n` +
+          `🏄 Доска: <b>${rental.board.code}</b>\n` +
+          `💰 Прайс: ${fmtPrice(listPrice)}\n` +
+          `🎁 Скидка${pctLabel}: <b>−${fmtPrice(savedKgs)}</b>\n` +
+          `✅ К оплате: <b>${fmtPrice(basePriceKgs)}</b>`,
+        );
+      } else {
+        await notify(
+          ctx.api,
+          Number(rental.user.tgId),
+          `ℹ️ Скидка на аренду доски <b>${rental.board.code}</b> отменена.\n` +
+          `💰 К оплате: <b>${fmtPrice(basePriceKgs)}</b>`,
+        );
+      }
+    }
+
+    const pctLabel = discountPercent > 0 ? ` (−${discountPercent}%)` : "";
+    const msg = savedKgs > 0
+      ? `✅ Скидка${pctLabel} <b>−${fmtPrice(savedKgs)}</b> применена. К оплате: <b>${fmtPrice(basePriceKgs)}</b>`
+      : `✅ Скидка снята. К оплате: <b>${fmtPrice(basePriceKgs)}</b>`;
+
+    await ctx.editMessageText(msg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🎁 Изменить скидку", `admin:board_discount:${rentalId}`)
+        .text("⬅️ К доске", `admin:board_detail:${rental.boardId}`),
+    });
+  } catch (e: any) {
+    await ctx.editMessageText(`⚠️ ${escapeHtml(e.message ?? "Ошибка")}`, {
+      reply_markup: new InlineKeyboard().text("⬅️ Назад", `admin:board_discount:${rentalId}`),
+    });
+  }
+});
+
+/** Запрос кастомного процента */
+boardsHandlers.callbackQuery(/^admin:bd_custom_pct:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+  ctx.session.rentalDiscountDraft = { rentalId };
+  ctx.session.inputMode = "rental_discount_pct";
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+  const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+
+  await ctx.editMessageText(
+    `✏️ <b>Скидка в процентах</b>\n\n` +
+    `🏄 Доска: <b>${rental.board.code}</b>  ·  Прайс: ${fmtPrice(listPrice)}\n\n` +
+    `Введите процент скидки от <b>1</b> до <b>100</b>:`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("❌ Отмена", `admin:board_discount:${rentalId}`),
+    }
+  );
+});
+
+/** Запрос кастомной суммы в сомах */
+boardsHandlers.callbackQuery(/^admin:bd_custom_amt:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+  ctx.session.rentalDiscountDraft = { rentalId };
+  ctx.session.inputMode = "rental_discount_amt";
+
+  const rental = await prisma.rental.findUniqueOrThrow({
+    where: { id: rentalId },
+    include: { board: true, tariff: true },
+  });
+  const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+
+  await ctx.editMessageText(
+    `💰 <b>Скидка в сомах</b>\n\n` +
+    `🏄 Доска: <b>${rental.board.code}</b>  ·  Прайс: ${fmtPrice(listPrice)}\n\n` +
+    `Введите сумму скидки в сомах (не более ${fmtPrice(listPrice)}):`,
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("❌ Отмена", `admin:board_discount:${rentalId}`),
+    }
+  );
+});
+
+/** Обработка текста — ввод скидки или отправка сообщения клиенту доски */
 boardsHandlers.on("message:text", async (ctx, next) => {
+  // ── Ввод кастомной скидки на аренду ──
+  const inputMode = ctx.session.inputMode;
+  const discountDraft = ctx.session.rentalDiscountDraft;
+
+  if ((inputMode === "rental_discount_pct" || inputMode === "rental_discount_amt") && discountDraft) {
+    ctx.session.inputMode = undefined;
+    ctx.session.rentalDiscountDraft = undefined;
+    const raw = ctx.message.text.trim().replace(/\s+/g, "");
+    const val = parseFloat(raw);
+
+    if (isNaN(val) || val < 0) {
+      return ctx.reply("⚠️ Введите корректное положительное число.", {
+        reply_markup: new InlineKeyboard().text("⬅️ К аренде", `admin:board_discount:${discountDraft.rentalId}`),
+      });
+    }
+
+    if (inputMode === "rental_discount_pct" && val > 100) {
+      return ctx.reply("⚠️ Процент не может превышать 100.", {
+        reply_markup: new InlineKeyboard().text("⬅️ Назад", `admin:board_discount:${discountDraft.rentalId}`),
+      });
+    }
+
+    try {
+      const rental = await prisma.rental.findUniqueOrThrow({
+        where: { id: discountDraft.rentalId },
+        include: { board: true, user: true, tariff: true },
+      });
+
+      const discount = inputMode === "rental_discount_pct"
+        ? { type: "percent" as const, value: Math.round(val) }
+        : { type: "amount" as const, value: Math.round(val) };
+
+      const { basePriceKgs, discountPercent, savedKgs } =
+        await rentalService.applyRentalDiscount(discountDraft.rentalId, discount, ctx.dbUser!.id);
+
+      // Уведомляем клиента если он пришёл через Telegram
+      if (!rental.sellerUserId && rental.user.tgId) {
+        const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+        const pctLabel = discountPercent > 0 ? ` (−${discountPercent}%)` : "";
+        await notify(
+          ctx.api,
+          Number(rental.user.tgId),
+          `🎁 <b>Администратор выдал вам скидку!</b>\n\n` +
+          `🏄 Доска: <b>${rental.board.code}</b>\n` +
+          `💰 Прайс: ${fmtPrice(listPrice)}\n` +
+          `🎁 Скидка${pctLabel}: <b>−${fmtPrice(savedKgs)}</b>\n` +
+          `✅ К оплате: <b>${fmtPrice(basePriceKgs)}</b>`,
+        );
+      }
+
+      const pctLabel = discountPercent > 0 ? ` (−${discountPercent}%)` : "";
+      await ctx.reply(
+        `✅ <b>Скидка применена!</b>\n\n` +
+        `🏄 Доска: <b>${rental.board.code}</b>\n` +
+        `🎁 Скидка${pctLabel}: <b>−${fmtPrice(savedKgs)}</b>\n` +
+        `💳 Новая сумма: <b>${fmtPrice(basePriceKgs)}</b>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .text("⬅️ К доске", `admin:board_detail:${rental.boardId}`)
+            .text("⬅️ Доски", "admin:boards"),
+        }
+      );
+    } catch (e: any) {
+      await ctx.reply(`⚠️ Ошибка: ${escapeHtml(e.message ?? "неизвестно")}`);
+    }
+    return;
+  }
+
+  // ── Отправка сообщения клиенту доски ──
   const rentalId = ctx.session.boardMsgRentalId;
   if (!rentalId) return next();
 
@@ -358,8 +604,6 @@ boardsHandlers.on("message:text", async (ctx, next) => {
     where: { id: rentalId },
     include: { board: true, user: true },
   });
-
-  const adminName = ctx.dbUser?.name ?? "Администратор";
 
   await notify(
     ctx.api,

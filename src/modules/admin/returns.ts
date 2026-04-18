@@ -68,10 +68,9 @@ returnsHandlers.callbackQuery(/^return:confirm:(\d+)$/, async (ctx) => {
     }
   }
 
-  let overdueMin = 0;
   let overdueCost = 0;
   if (isExpired) {
-    overdueMin = await rentalService.getOverdueMinutes(rental);
+    const overdueMin = await rentalService.getOverdueMinutes(rental);
     if (overdueMin > 0) {
       overdueCost = overdueMin * rentalService.OVERDUE_RATE_PER_MIN;
       text += `\n⚠️ <b>Просрочка: ${fmtDuration(overdueMin)} — ${fmtPrice(overdueCost)}</b>\n`;

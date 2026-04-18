@@ -35,6 +35,7 @@ import { extensionsHandlers } from "./extensions";
 import { chatHandlers } from "./chat";
 import { walkinHandlers } from "./walkin";
 import { rolesHandlers } from "./roles";
+import { tariffsHandlers } from "./tariffs";
 
 export const adminModule = new Composer<BotContext>();
 
@@ -48,6 +49,9 @@ adminModule.use(returnsHandlers);
 adminModule.use(boardsHandlers);
 adminModule.use(reportsHandlers);
 adminModule.use(extensionsHandlers);
+
+// Тарифы — регистрируем до chat/walkin
+adminModule.use(tariffsHandlers);
 
 // Хендлеры сообщений (порядок КРИТИЧЕН — chat → walkin → roles)
 adminModule.use(chatHandlers);       // message:text: пересылка в чате, иначе next()

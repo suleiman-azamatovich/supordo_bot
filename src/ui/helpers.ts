@@ -91,3 +91,60 @@ export function fmtDate(d: Date): string {
   });
 }
 
+/** Format time only (HH:MM, Bishkek timezone) */
+export function fmtTime(d: Date): string {
+  return d.toLocaleTimeString("ru-RU", {
+    timeZone: config.TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// ─── Rental-статусы: единые иконки и подписи ──────────────────────────────
+//
+// Используется во всех местах, где выводится состояние аренды:
+//   - клиентские «Мои аренды»
+//   - админская панель и список досок
+//   - уведомления
+
+/** Иконка статуса аренды */
+export function rentalStatusIcon(status: string): string {
+  switch (status) {
+    case "CREATED":
+    case "WAIT_PAYMENT":
+    case "WAIT_ADMIN": return "💳";
+    case "RENTED": return "🏄";
+    case "WAIT_RETURN": return "⏰";
+    case "RETURNED": return "✅";
+    case "CANCELLED": return "❌";
+    default: return "📋";
+  }
+}
+
+/** Краткая подпись статуса */
+export function rentalStatusLabel(status: string): string {
+  switch (status) {
+    case "CREATED": return "создана";
+    case "WAIT_PAYMENT": return "ожидает оплаты";
+    case "WAIT_ADMIN": return "проверка оплаты";
+    case "RENTED": return "в аренде";
+    case "WAIT_RETURN": return "верните доску!";
+    case "RETURNED": return "завершена";
+    case "CANCELLED": return "отменена";
+    default: return status;
+  }
+}
+
+/**
+ * Визуальный прогресс-бар из эмодзи-квадратов.
+ *
+ * @param ratio — значение в диапазоне [0..1]
+ * @param width — ширина бара в символах (по умолчанию 10)
+ */
+export function progressBar(ratio: number, width = 10): string {
+  const r = Math.max(0, Math.min(1, ratio));
+  const filled = Math.round(r * width);
+  return "▓".repeat(filled) + "░".repeat(width - filled);
+}
+
+

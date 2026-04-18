@@ -29,6 +29,7 @@ export function mainMenuKeyboard(role: Role): InlineKeyboard {
     kb.text("✅ Проверка оплат", "admin:cashbox").row();
     kb.text("📜 История транзакций", "admin:transactions").row();
     kb.text("📊 Отчёты", "admin:reports").row();
+    kb.text("💰 Тарифы", "admin:tariffs").row();
     kb.text("⚙️ Режим", "admin:mode").row();
   }
 

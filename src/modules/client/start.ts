@@ -82,7 +82,7 @@ startHandlers.callbackQuery("client:qr_hint", async (ctx) => {
 /** Ввод кода доски вручную — активирует ожидание текстового сообщения */
 startHandlers.callbackQuery("client:enter_code", async (ctx) => {
   await ctx.answerCallbackQuery();
-  ctx.session.waitingBoardCode = true;
+  ctx.session.inputMode = 'board_code';
   await ctx.editMessageText(
     "🔤 Введите код доски (например, <code>SUP-05</code>):",
     {
@@ -96,16 +96,10 @@ startHandlers.callbackQuery("client:enter_code", async (ctx) => {
 startHandlers.callbackQuery("back:menu", async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => { });
   const role = ctx.dbUser?.role ?? "CLIENT";
-  ctx.session.waitingBoardCode = false;
+  ctx.session.inputMode = undefined;
   ctx.session.walkin = undefined;
-  ctx.session.chatMode = undefined;
-  ctx.session.chatWithAdminTgId = undefined;
-  ctx.session.chatReplyProofId = undefined;
-  ctx.session.chatReplyRentalId = undefined;
-  ctx.session.chatWithClientTgId = undefined;
-  ctx.session.chatProofId = undefined;
-  ctx.session.chatRentalId = undefined;
-  ctx.session.waitingMBankQR = false;
+  ctx.session.adminChat = undefined;
+  ctx.session.clientChat = undefined;
   const mode = await modeLabel(role);
   try {
     await ctx.editMessageText(`📋 <b>Главное меню</b>${mode}`, {

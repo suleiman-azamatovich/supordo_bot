@@ -107,7 +107,7 @@ rolesHandlers.command("set_mbank_qr", async (ctx) => {
     return ctx.reply("⛔ Только для админа.");
   }
 
-  ctx.session.waitingMBankQR = true;
+  ctx.session.inputMode = 'mbank_qr';
   await ctx.reply(
     "📷 Отправьте фото QR-кода MBank для оплаты.\n" +
     "Это изображение будет показываться клиентам при аренде и бронировании."
@@ -187,9 +187,9 @@ rolesHandlers.command("remove_cashier", async (ctx) => {
 
 /** Получение фото QR-кода MBank */
 rolesHandlers.on("message:photo", async (ctx, next) => {
-  if (!ctx.session.waitingMBankQR) return next();
+  if (ctx.session.inputMode !== 'mbank_qr') return next();
 
-  ctx.session.waitingMBankQR = false;
+  ctx.session.inputMode = undefined;
   const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
   config.MBANK_QR_FILE_ID = fileId;
 

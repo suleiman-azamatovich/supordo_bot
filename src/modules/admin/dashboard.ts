@@ -89,10 +89,20 @@ async function renderDashboard(ctx: BotContext) {
     const rentals = await prisma.rental.findMany({
       where: { status: { in: [RentalStatus.RENTED, RentalStatus.WAIT_RETURN] } },
       include: { board: true, user: true, tariff: true },
-      orderBy: { startAt: "asc" },
+      orderBy: [
+        // Сначала просрочки (требуют внимания), затем по времени старта
+        { status: "desc" },
+        { startAt: "asc" },
+      ],
+      take: 10,
     });
 
-    text += `\n<b>Активные аренды:</b>\n`;
+    const totalActive = activeRentals + waitReturns;
+    text += `\n<b>Активные аренды</b>`;
+    if (totalActive > rentals.length) {
+      text += ` <i>(показаны ${rentals.length} из ${totalActive})</i>`;
+    }
+    text += `:\n`;
     for (const r of rentals) {
       const client = escapeHtml(r.clientName ?? r.user.name);
       const isExpired = r.status === RentalStatus.WAIT_RETURN;
@@ -463,7 +473,12 @@ dashboardHandlers.callbackQuery(/^admin:tx:(\d+)$/, async (ctx) => {
         text += `🏄 <b>Доска:</b> ${rental.board.code}\n`;
         text += `👤 <b>Клиент:</b> ${escapeHtml(rental.clientName ?? rental.user.name)}\n`;
         if (rental.tariff) {
-          text += `⏱ <b>Тариф:</b> ${rental.tariff.name} — ${fmtPrice(rental.tariff.price)}\n`;
+          const netPrice = rental.basePriceKgs ?? rental.tariffPriceKgs ?? rental.tariff.price;
+          text += `⏱ <b>Тариф:</b> ${rental.tariff.name} — ${fmtPrice(netPrice)}`;
+          if ((rental.discountPercent ?? 0) > 0) {
+            text += ` 🎁 −${rental.discountPercent}%`;
+          }
+          text += `\n`;
         }
       }
     }

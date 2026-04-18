@@ -4,12 +4,104 @@ import { BotContext } from "./context";
 import { NextFunction } from "grammy";
 import { config } from "./config";
 
+/** Параметры rate limiter */
+const RATE_LIMIT_WINDOW_MS = 1_000; // 1 секунда
+const RATE_LIMIT_MAX = 3; // макс. 3 действия за окно
+const RATE_LIMIT_MAX_ENTRIES = 10_000; // защита от неограниченного роста
+const rateLimitMap = new Map<number, { count: number; resetAt: number }>();
+
+/**
+ * Периодическая очистка rateLimitMap — удаляет протухшие записи.
+ * Без этого Map растёт на +1 запись за каждого уникального пользователя навсегда → утечка памяти.
+ */
+function cleanupRateLimitMap() {
+  const now = Date.now();
+  for (const [userId, entry] of rateLimitMap) {
+    if (now >= entry.resetAt) rateLimitMap.delete(userId);
+  }
+  // Страховка: если Map внезапно раздулся (например, массовый спам),
+  // сбрасываем полностью, чтобы не дать расти бесконечно.
+  if (rateLimitMap.size > RATE_LIMIT_MAX_ENTRIES) {
+    rateLimitMap.clear();
+  }
+}
+
+/**
+ * Rate limiting middleware — ограничивает спам callback-кнопок.
+ *
+ * Позволяет не более RATE_LIMIT_MAX действий за RATE_LIMIT_WINDOW_MS.
+ * Применяется к callback_query для защиты от спама.
+ */
+export async function rateLimitMiddleware(ctx: BotContext, next: NextFunction) {
+  if (!ctx.callbackQuery || !ctx.from) return next();
+
+  const userId = ctx.from.id;
+  const now = Date.now();
+  let entry = rateLimitMap.get(userId);
+
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    rateLimitMap.set(userId, entry);
+    return next();
+  }
+
+  entry.count++;
+  if (entry.count > RATE_LIMIT_MAX) {
+    await ctx.answerCallbackQuery({ text: "⏳ Слишком быстро. Подождите секунду.", show_alert: false });
+    return;
+  }
+
+  return next();
+}
+
 /** In-memory user cache: tgId → user data. Avoids DB hit on every update. */
 const userCache = new Map<bigint, {
   id: number; tgId: bigint; role: Role; name: string;
-  phone: string | null; spotId: number | null; ts: number;
+  phone: string | null; spotId: number | null; discountPercent: number; ts: number;
 }>();
 const CACHE_TTL_MS = 5 * 60_000; // 5 min
+const USER_CACHE_MAX_ENTRIES = 5_000;
+
+/**
+ * Периодическая очистка userCache — удаляет протухшие записи
+ * и ограничивает размер кеша, чтобы предотвратить утечку памяти.
+ */
+function cleanupUserCache() {
+  const now = Date.now();
+  for (const [tgId, entry] of userCache) {
+    if (now - entry.ts > CACHE_TTL_MS) userCache.delete(tgId);
+  }
+  if (userCache.size > USER_CACHE_MAX_ENTRIES) {
+    // Срезаем самые старые записи (FIFO-ish)
+    const excess = userCache.size - USER_CACHE_MAX_ENTRIES;
+    let removed = 0;
+    for (const tgId of userCache.keys()) {
+      if (removed >= excess) break;
+      userCache.delete(tgId);
+      removed++;
+    }
+  }
+}
+
+/**
+ * Запустить периодическую очистку in-memory кешей middleware.
+ * Вызывается один раз при старте бота из `index.ts`.
+ * @returns Функция остановки (clearInterval).
+ */
+export function startMiddlewareMaintenance(): () => void {
+  const CLEANUP_INTERVAL_MS = 5 * 60_000; // 5 мин
+  const intervalId = setInterval(() => {
+    try {
+      cleanupRateLimitMap();
+      cleanupUserCache();
+    } catch (e) {
+      console.error("[middleware] Ошибка очистки кешей:", e);
+    }
+  }, CLEANUP_INTERVAL_MS);
+  // `unref` — не держать event loop, чтобы не блокировать graceful shutdown
+  intervalId.unref?.();
+  return () => clearInterval(intervalId);
+}
 
 /**
  * Auth middleware: upsert user in DB, populate ctx.dbUser and session.
@@ -47,6 +139,7 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
     cached = {
       id: user.id, tgId: user.tgId, role: user.role,
       name: user.name, phone: user.phone, spotId: user.spotId,
+      discountPercent: user.discountPercent ?? 0,
       ts: now,
     };
     userCache.set(tgId, cached);
@@ -55,6 +148,7 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
   ctx.dbUser = {
     id: cached.id, tgId: cached.tgId, role: cached.role,
     name: cached.name, phone: cached.phone, spotId: cached.spotId,
+    discountPercent: cached.discountPercent,
   };
 
   ctx.session.userId = cached.id;
@@ -86,14 +180,8 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
     const isChatAction = chatActions.some((a) => ctx.callbackQuery!.data!.startsWith(a));
     if (!isChatAction) {
       // Clear admin chat state
-      ctx.session.chatMode = undefined;
-      ctx.session.chatWithClientTgId = undefined;
-      ctx.session.chatProofId = undefined;
-      ctx.session.chatRentalId = undefined;
-      // Clear client chat state
-      ctx.session.chatWithAdminTgId = undefined;
-      ctx.session.chatReplyProofId = undefined;
-      ctx.session.chatReplyRentalId = undefined;
+      ctx.session.adminChat = undefined;
+      ctx.session.clientChat = undefined;
     }
   }
 
@@ -101,7 +189,7 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
     // New message from user — clear everything (fire-and-forget)
     const ids = ctx.session.lastBotMsgIds ?? [];
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
+      void Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [];
     // Delete user's message (fire-and-forget)
@@ -111,30 +199,39 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
     const sourceId = ctx.callbackQuery.message.message_id;
     const ids = (ctx.session.lastBotMsgIds ?? []).filter((id) => id !== sourceId);
     if (ids.length > 0) {
-      Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
+      void Promise.all(ids.map((id) => ctx.api.deleteMessage(chatId, id).catch(() => { })));
     }
     ctx.session.lastBotMsgIds = [sourceId];
   }
 
   // Wrap reply methods to auto-track sent message IDs
+  const MAX_TRACKED_MSGS = 50; // защита от неограниченного роста сессии
+  const trackMsgId = (id: number) => {
+    const arr = (ctx.session.lastBotMsgIds ??= []);
+    arr.push(id);
+    if (arr.length > MAX_TRACKED_MSGS) {
+      arr.splice(0, arr.length - MAX_TRACKED_MSGS);
+    }
+  };
+
   const origReply = ctx.reply.bind(ctx);
   ctx.reply = (async (text: string, other?: any, signal?: any) => {
     const msg = await origReply(text, other, signal);
-    (ctx.session.lastBotMsgIds ??= []).push(msg.message_id);
+    trackMsgId(msg.message_id);
     return msg;
   }) as any;
 
   const origPhoto = ctx.replyWithPhoto.bind(ctx);
   ctx.replyWithPhoto = (async (photo: any, other?: any, signal?: any) => {
     const msg = await origPhoto(photo, other, signal);
-    (ctx.session.lastBotMsgIds ??= []).push(msg.message_id);
+    trackMsgId(msg.message_id);
     return msg;
   }) as any;
 
   const origDoc = ctx.replyWithDocument.bind(ctx);
   ctx.replyWithDocument = (async (doc: any, other?: any, signal?: any) => {
     const msg = await origDoc(doc, other, signal);
-    (ctx.session.lastBotMsgIds ??= []).push(msg.message_id);
+    trackMsgId(msg.message_id);
     return msg;
   }) as any;
 

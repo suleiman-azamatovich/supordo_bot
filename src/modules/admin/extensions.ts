@@ -18,6 +18,7 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { fmtPrice, fmtDuration, escapeHtml } from "../../ui/helpers";
+import { applyDiscount } from "../../services/pricing";
 import * as rentalService from "../../services/rental";
 import { notify } from "../../services/notify";
 
@@ -31,9 +32,7 @@ export const extensionsHandlers = new Composer<BotContext>();
  */
 extensionsHandlers.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
-  ctx.session.chatMode = undefined;
-  ctx.session.chatWithClientTgId = undefined;
-  ctx.session.chatRentalId = undefined;
+  ctx.session.adminChat = undefined;
   const rentalId = parseInt(ctx.match[1]);
 
   const rental = await prisma.rental.findUniqueOrThrow({
@@ -49,12 +48,20 @@ extensionsHandlers.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
   }
 
   try {
-    const extensionTariff = await prisma.tariff.findFirst({
-      where: { spotId: rental.spotId, durationMinutes: minutes },
-    });
-    const extensionCost = extensionTariff?.price ?? 0;
+    // Приоритет: снапшот суммы в аренде (зафиксирован при запросе клиента),
+    // fallback на пересчёт по текущему тарифу для старых записей без снапшота.
+    let extensionCost: number;
+    if (rental.pendingExtraAmount != null) {
+      extensionCost = rental.pendingExtraAmount;
+    } else {
+      const extensionTariff = await prisma.tariff.findFirst({
+        where: { spotId: rental.spotId, durationMinutes: minutes, isActive: true },
+      });
+      const extensionGross = extensionTariff?.price ?? 0;
+      extensionCost = applyDiscount(extensionGross, rental.discountPercent ?? 0);
+    }
 
-    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionCost);
+    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionCost, true);
     const client = escapeHtml(rental.clientName ?? rental.user.name);
 
     let msg = `✅ Продление подтверждено!\n\n`;
@@ -105,9 +112,7 @@ extensionsHandlers.callbackQuery(/^ext:approve:(\d+)$/, async (ctx) => {
 /** Отклонение запроса на продление — уведомление клиенту */
 extensionsHandlers.callbackQuery(/^ext:reject:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
-  ctx.session.chatMode = undefined;
-  ctx.session.chatWithClientTgId = undefined;
-  ctx.session.chatRentalId = undefined;
+  ctx.session.adminChat = undefined;
   const rentalId = parseInt(ctx.match[1]);
 
   const rental = await prisma.rental.findUniqueOrThrow({
@@ -147,10 +152,7 @@ extensionsHandlers.callbackQuery(/^ext:chat:(\d+)$/, async (ctx) => {
     include: { user: true, board: true },
   });
 
-  ctx.session.chatMode = 'extension';
-  ctx.session.chatWithClientTgId = Number(rental.user.tgId);
-  ctx.session.chatRentalId = rentalId;
-  ctx.session.chatProofId = undefined;
+  ctx.session.adminChat = { mode: 'extension', clientTgId: Number(rental.user.tgId), rentalId };
 
   const client = escapeHtml(rental.clientName ?? rental.user.name);
 
@@ -230,14 +232,24 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
     include: { board: true, tariff: true, user: true },
   });
 
+  // Применяем снапшот скидки клиента к стоимости продления
+  const discountPct = rental.discountPercent ?? 0;
+  const extensionGross = extensionTariff.price;
+  const extensionCost = applyDiscount(extensionGross, discountPct);
+
   try {
-    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionTariff.price);
+    const result = await rentalService.extendRental(rentalId, minutes, ctx.dbUser!.id, extensionCost);
     const totalMin = (rental.tariff?.durationMinutes ?? 0) + (rental.extraMinutes ?? 0) + minutes;
     const client = escapeHtml(rental.clientName ?? rental.user.name);
 
+    const priceLine =
+      discountPct > 0
+        ? `${fmtPrice(extensionCost)} <s>${fmtPrice(extensionGross)}</s> (−${discountPct}%)`
+        : `${fmtPrice(extensionCost)}`;
+
     let msg = `✅ Аренда доски <b>${rental.board.code}</b> продлена!\n`;
     msg += `👤 Клиент: ${client}\n`;
-    msg += `⏱ Добавлено: <b>${fmtDuration(minutes)}</b> — ${fmtPrice(extensionTariff.price)}\n`;
+    msg += `⏱ Добавлено: <b>${fmtDuration(minutes)}</b> — ${priceLine}\n`;
     if (result.overdueMinutes > 0) {
       msg += `⚠️ Покрыто просрочки: <b>${fmtDuration(result.overdueMinutes)}</b>\n`;
       msg += `✅ Чистое время: <b>${fmtDuration(result.netMinutes)}</b>\n`;
@@ -255,7 +267,11 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
     let clientMsg = `✅ <b>Продление подтверждено!</b>\n\n`;
     clientMsg += `🏄 Доска: <b>${rental.board.code}</b>\n`;
     clientMsg += `⏱ Продление: <b>+${fmtDuration(minutes)}</b>\n`;
-    clientMsg += `💰 Стоимость: <b>${fmtPrice(extensionTariff.price)}</b>\n`;
+    clientMsg += `💰 Стоимость: <b>${fmtPrice(extensionCost)}</b>`;
+    if (discountPct > 0) {
+      clientMsg += ` <i>(со скидкой −${discountPct}%)</i>`;
+    }
+    clientMsg += `\n`;
     if (result.overdueMinutes > 0) {
       clientMsg += `\n⚠️ У вас была просрочка <b>${fmtDuration(result.overdueMinutes)}</b> — `;
       clientMsg += `она вычтена из продления.\n`;

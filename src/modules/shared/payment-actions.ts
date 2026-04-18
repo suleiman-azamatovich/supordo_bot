@@ -91,7 +91,7 @@ paymentActionsHandlers.callbackQuery(/^pay:approve:(\d+)$/, async (ctx) => {
       });
       if (rental && rental.pendingExtraMinutes) {
         const minutes = rental.pendingExtraMinutes;
-        const result = await rentalService.extendRental(rental.id, minutes, ctx.dbUser!.id, proof.amount);
+        const result = await rentalService.extendRental(rental.id, minutes, ctx.dbUser!.id, proof.amount, true);
 
         let clientMsg = `✅ <b>Продление подтверждено!</b>\n\n`;
         clientMsg += `🏄 Доска: <b>${rental.board.code}</b>\n`;

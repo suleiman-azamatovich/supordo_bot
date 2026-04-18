@@ -79,7 +79,7 @@ walkinHandlers.callbackQuery(/^walkin:board:(\d+)$/, async (ctx) => {
 
   const board = await prisma.board.findUniqueOrThrow({ where: { id: boardId } });
 
-  let text = `➕ <b>Выдать доску клиенту</b>\n\nДоска: <b>${board.code}</b>\nВыберите тариф:\n`;
+  const text = `➕ <b>Выдать доску клиенту</b>\n\nДоска: <b>${board.code}</b>\nВыберите тариф:\n`;
 
   const kb = new InlineKeyboard();
   for (const t of tariffs) {

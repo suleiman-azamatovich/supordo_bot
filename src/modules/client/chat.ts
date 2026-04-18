@@ -8,10 +8,10 @@
  *  - message:text — пересылка сообщений админам или ручной ввод кода доски
  *
  * Чат работает в двух режимах:
- *  1. По оплате (chatReplyProofId) — сообщения пересылаются с кнопками оплаты
- *  2. По продлению (chatReplyRentalId) — сообщения пересылаются с кнопками продления
+ *  1. По оплате (clientChat.mode === 'payment') — сообщения пересылаются с кнопками оплаты
+ *  2. По продлению (clientChat.mode === 'extension') — сообщения пересылаются с кнопками продления
  *
- * Если клиент не в режиме чата и ввёл код доски (waitingBoardCode) —
+ * Если клиент не в режиме чата и ввёл код доски (inputMode === 'board_code') —
  * обрабатывается ввод через handleRentalByQR.
  */
 
@@ -20,6 +20,7 @@ import { BotContext } from "../../bot/context";
 import { Role } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { handleRentalByQR } from "./helpers";
+import { escapeHtml } from "../../ui/helpers";
 
 export const chatHandlers = new Composer<BotContext>();
 
@@ -37,8 +38,7 @@ chatHandlers.callbackQuery(/^client:chat_admin:(\d+)$/, async (ctx) => {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
 
-  ctx.session.chatWithAdminTgId = -1; // флаг: рассылка всем админам
-  ctx.session.chatReplyProofId = proofId;
+  ctx.session.clientChat = { mode: 'payment', proofId };
 
   await ctx.reply(
     `💬 <b>Чат с администратором</b> (оплата #${proofId})\n\n` +
@@ -62,9 +62,7 @@ chatHandlers.callbackQuery(/^client:chat_ext:(\d+)$/, async (ctx) => {
     return ctx.reply("⚠️ Администратор недоступен.");
   }
 
-  ctx.session.chatWithAdminTgId = -1;
-  ctx.session.chatReplyRentalId = rentalId;
-  ctx.session.chatReplyProofId = undefined;
+  ctx.session.clientChat = { mode: 'extension', rentalId };
 
   await ctx.reply(
     `💬 <b>Чат с администратором</b> (продление аренды #${rentalId})\n\n` +
@@ -81,9 +79,7 @@ chatHandlers.callbackQuery(/^client:chat_ext:(\d+)$/, async (ctx) => {
 /** Завершение чата — очистка сессии */
 chatHandlers.callbackQuery("client:end_chat", async (ctx) => {
   await ctx.answerCallbackQuery("Чат завершён");
-  ctx.session.chatWithAdminTgId = undefined;
-  ctx.session.chatReplyProofId = undefined;
-  ctx.session.chatReplyRentalId = undefined;
+  ctx.session.clientChat = undefined;
   await ctx.editMessageText("🛑 Чат завершён.", {
     reply_markup: new InlineKeyboard().text("⬅️ Меню", "back:menu"),
   });
@@ -100,8 +96,8 @@ chatHandlers.callbackQuery("client:end_chat", async (ctx) => {
  */
 chatHandlers.on("message:text", async (ctx, next) => {
   // 1. Чат по оплате
-  if (ctx.session.chatWithAdminTgId && ctx.session.chatReplyProofId) {
-    const proofId = ctx.session.chatReplyProofId;
+  if (ctx.session.clientChat?.mode === 'payment') {
+    const proofId = ctx.session.clientChat.proofId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
       const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
@@ -109,7 +105,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
         try {
           await ctx.api.sendMessage(
             Number(admin.tgId),
-            `💬 <b>${userName}</b> (оплата #${proofId}):\n\n${ctx.message.text}`,
+            `💬 <b>${escapeHtml(userName)}</b> (оплата #${proofId}):\n\n${escapeHtml(ctx.message.text)}`,
             {
               parse_mode: "HTML",
               reply_markup: new InlineKeyboard()
@@ -132,15 +128,15 @@ chatHandlers.on("message:text", async (ctx, next) => {
   }
 
   // 2. Чат по продлению
-  if (ctx.session.chatWithAdminTgId && ctx.session.chatReplyRentalId) {
-    const rentalId = ctx.session.chatReplyRentalId;
+  if (ctx.session.clientChat?.mode === 'extension') {
+    const rentalId = ctx.session.clientChat.rentalId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
       const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
       await Promise.all(admins.map((admin) =>
         ctx.api.sendMessage(
           Number(admin.tgId),
-          `💬 <b>${userName}</b> (продление #${rentalId}):\n\n${ctx.message.text}`,
+          `💬 <b>${escapeHtml(userName)}</b> (продление #${rentalId}):\n\n${escapeHtml(ctx.message.text)}`,
           {
             parse_mode: "HTML",
             reply_markup: new InlineKeyboard()
@@ -162,10 +158,10 @@ chatHandlers.on("message:text", async (ctx, next) => {
   }
 
   // 3. Ручной ввод кода доски
-  if (!ctx.session.waitingBoardCode) return next();
+  if (ctx.session.inputMode !== 'board_code') return next();
 
   const code = ctx.message.text.trim().toUpperCase();
-  ctx.session.waitingBoardCode = false;
+  ctx.session.inputMode = undefined;
 
   if (!/^SUP-\d{2}$/.test(code)) {
     await ctx.reply(
