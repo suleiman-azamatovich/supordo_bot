@@ -213,6 +213,7 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
   const icon = rentalIcon(rental.status);
   const label = rentalLabel(rental.status);
   const listPrice = rental.tariffPriceKgs ?? rental.tariff?.price ?? 0;
+  const originalPrice = rental.tariffOriginalPriceKgs; // null если акции не было
   const tariffPrice = rental.basePriceKgs ?? listPrice;
   const discountPct = rental.discountPercent ?? 0;
   const tariffDuration = rental.tariff?.durationMinutes ?? 0;
@@ -222,6 +223,10 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
 
   // Раздел: тариф
   text += `📋 <b>Тариф</b>\n`;
+  // Акция (если была): показываем зачёркнутый прайс → акционная цена
+  if (originalPrice && originalPrice > listPrice) {
+    text += `   🎁 <i>Акция:</i> <s>${fmtPrice(originalPrice)}</s> → <b>${fmtPrice(listPrice)}</b>\n`;
+  }
   if (listPrice > tariffPrice) {
     text += `   <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(tariffPrice)}</b>  ·  ⏱ ${fmtDuration(tariffDuration)}\n`;
     const savedKgs = listPrice - tariffPrice;

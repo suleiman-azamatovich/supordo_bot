@@ -18,53 +18,32 @@ import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../ui/helpers";
 import { resetExpiryTracking } from "./expiry";
-import { applyDiscount, normalizePercent } from "./pricing";
+import { applyDiscount, normalizePercent, tariffEffectivePrice } from "./pricing";
 
-/** Проверяет, включён ли тестовый режим (самый короткий тариф ≤ 3 мин) */
-let _testModeCache: { value: boolean; ts: number } | null = null;
-const TEST_MODE_TTL = 5_000; // 5 секунд
 
-export async function isTestMode(): Promise<boolean> {
-  const now = Date.now();
-  if (_testModeCache && now - _testModeCache.ts < TEST_MODE_TTL) {
-    return _testModeCache.value;
-  }
-  const shortest = await prisma.tariff.findFirst({ orderBy: { durationMinutes: "asc" } });
-  const value = !!shortest && shortest.durationMinutes <= 3;
-  _testModeCache = { value, ts: now };
-  return value;
-}
-
-/** Сбросить кеш тестового режима (после изменения тарифов) */
-export function clearTestModeCache() {
-  _testModeCache = null;
+/** Задержка старта таймера после подтверждения оплаты.
+ * Даёт время клиенту дойти до доски: 5 минут.
+ */
+export function getStartGraceMs(): number {
+  return 5 * 60_000;
 }
 
 /**
- * Задержка старта таймера после подтверждения оплаты.
- * Даёт время клиенту дойти до доски.
- * @returns Грейс в миллисекундах: 10 сек (тест) | 3 мин (рабочий)
+ * Грейс-период после окончания аренды — не предусмотрен (0).
+ * Просрочка начисляется сразу по истечении времени.
  */
-export async function getStartGraceMs(): Promise<number> {
-  return (await isTestMode()) ? 10_000 : 3 * 60_000;
-}
-
-/**
- * Грейс-период после окончания аренды до начала начисления просрочки.
- * @returns Грейс в миллисекундах: 10 сек (тест) | 5 мин (рабочий)
- */
-export async function getEndGraceMs(): Promise<number> {
-  return (await isTestMode()) ? 10_000 : 5 * 60_000;
+export function getEndGraceMs(): number {
+  return 0;
 }
 
 /**
  * Таймаут отмены неоплаченных аренд (CREATED/WAIT_PAYMENT).
- * После истечения аренда автоматически отменяется.
- * @returns Таймаут в миллисекундах: 3 мин (тест) | 8 мин (рабочий)
+ * @returns 8 минут
  */
-export async function getUnpaidTimeoutMs(): Promise<number> {
-  return (await isTestMode()) ? 3 * 60_000 : 8 * 60_000;
+export function getUnpaidTimeoutMs(): number {
+  return 8 * 60_000;
 }
+
 
 /** Ставка просрочки (сом за минуту после грейс-периода) */
 export const OVERDUE_RATE_PER_MIN = 10;
@@ -168,9 +147,12 @@ export async function createRental(params: {
     prisma.user.findUniqueOrThrow({ where: { id: params.userId } }),
   ]);
 
+  // Эффективная цена с учётом акции и снапшот исходной цены
+  const effectivePrice = tariffEffectivePrice(tariff);
+  const tariffOriginalPriceKgs = effectivePrice < tariff.price ? tariff.price : null;
   // Снапшот скидки клиента на момент создания (даже если потом админ изменит).
   const discountPercent = normalizePercent(clientUser.discountPercent);
-  const basePriceKgs = applyDiscount(tariff.price, discountPercent);
+  const basePriceKgs = applyDiscount(effectivePrice, discountPercent);
 
   const rental = await prisma.$transaction(async (tx) => {
     // Lock the board row to prevent double-booking (SELECT FOR UPDATE)
@@ -189,7 +171,8 @@ export async function createRental(params: {
         tariffId: params.tariffId,
         sellerUserId: params.sellerUserId,
         clientName: params.clientName,
-        tariffPriceKgs: tariff.price,
+        tariffPriceKgs: effectivePrice,
+        tariffOriginalPriceKgs,
         basePriceKgs,
         discountPercent,
         status: RentalStatus.CREATED,
@@ -208,6 +191,8 @@ export async function createRental(params: {
   await audit.log(params.userId, "Rental", rental.id, AuditAction.CREATED, {
     tariffId: tariff.id,
     tariffPrice: tariff.price,
+    promoPrice: tariff.promoPrice,
+    effectivePrice,
     basePrice: basePriceKgs,
     discountPercent,
     sellerUserId: params.sellerUserId,
@@ -230,9 +215,11 @@ export async function createWalkinRental(params: {
   });
 
   // Walk-in аренды оформляются без привязки к конкретному клиентскому профилю
-  // (`userId = sellerUserId`), поэтому персональные скидки не применяются.
+  // (`userId = sellerUserId`), поэтому персональные скидки не применяются, но акция — да.
+  const effectivePrice = tariffEffectivePrice(tariff);
+  const tariffOriginalPriceKgs = effectivePrice < tariff.price ? tariff.price : null;
   const discountPercent = 0;
-  const basePriceKgs = tariff.price;
+  const basePriceKgs = effectivePrice;
 
   const now = new Date();
   const rental = await prisma.$transaction(async (tx) => {
@@ -252,7 +239,8 @@ export async function createWalkinRental(params: {
         tariffId: params.tariffId,
         sellerUserId: params.sellerUserId,
         clientName: params.clientName,
-        tariffPriceKgs: tariff.price,
+        tariffPriceKgs: effectivePrice,
+        tariffOriginalPriceKgs,
         basePriceKgs,
         discountPercent,
         status: RentalStatus.RENTED,
@@ -271,6 +259,8 @@ export async function createWalkinRental(params: {
   await audit.log(params.sellerUserId, "Rental", rental.id, AuditAction.WALKIN_CREATED, {
     tariffId: tariff.id,
     tariffPrice: tariff.price,
+    promoPrice: tariff.promoPrice,
+    effectivePrice,
     basePrice: basePriceKgs,
     clientName: params.clientName,
   });
@@ -368,7 +358,7 @@ export async function approveRental(rentalId: number, adminUserId: number) {
   if (rental.status !== RentalStatus.WAIT_ADMIN) {
     throw new Error("Аренда уже обработана");
   }
-  const graceMs = await getStartGraceMs();
+  const graceMs = getStartGraceMs();
   const startAt = new Date(Date.now() + graceMs);
   const updated = await prisma.rental.update({
     where: { id: rentalId },

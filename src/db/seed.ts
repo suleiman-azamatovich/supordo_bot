@@ -72,11 +72,11 @@ async function main() {
   }
   console.log(`Boards created: ${boards.length}`);
 
-  // Create tariffs (prices in KGS — сом)
+  // Create tariffs (prices in KGS — сом). promoPrice — акционная цена.
   const tariffs = [
-    { spotId: spot.id, name: "1 час", durationMinutes: 60, price: 600 },
-    { spotId: spot.id, name: "1,5 часа", durationMinutes: 90, price: 900 },
-    { spotId: spot.id, name: "2 часа", durationMinutes: 120, price: 1200 },
+    { spotId: spot.id, name: "1 час", durationMinutes: 60, price: 900, promoPrice: 800 },
+    { spotId: spot.id, name: "1,5 часа", durationMinutes: 90, price: 1200, promoPrice: null },
+    { spotId: spot.id, name: "2 часа", durationMinutes: 120, price: 1500, promoPrice: null },
   ];
 
   // Delete existing tariffs and recreate

@@ -232,9 +232,12 @@ extensionsHandlers.callbackQuery(/^admin:extend_confirm:(\d+):(\d+)$/, async (ct
     include: { board: true, tariff: true, user: true },
   });
 
-  // Применяем снапшот скидки клиента к стоимости продления
+  // Применяем снапшот скидки клиента к стоимости продления.
+  // Акция тарифа продления также учитывается (promoPrice).
   const discountPct = rental.discountPercent ?? 0;
-  const extensionGross = extensionTariff.price;
+  const extensionGross = extensionTariff.promoPrice != null && extensionTariff.promoPrice < extensionTariff.price
+    ? extensionTariff.promoPrice
+    : extensionTariff.price;
   const extensionCost = applyDiscount(extensionGross, discountPct);
 
   try {

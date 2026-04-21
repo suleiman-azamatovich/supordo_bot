@@ -20,9 +20,9 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { BoardStatus, Role } from "@prisma/client";
-import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../../ui/helpers";
+import { fmtPrice, fmtDuration, fmtDate, escapeHtml, fmtTariffPriceLine } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
-import { applyDiscount, normalizePercent } from "../../services/pricing";
+import { applyDiscount, normalizePercent, tariffEffectivePrice } from "../../services/pricing";
 import { sendMBankQR, notifyAdminsNewPayment } from "./helpers";
 
 export const rentalHandlers = new Composer<BotContext>();
@@ -46,7 +46,8 @@ rentalHandlers.callbackQuery(/^rent:pick_tariff:(\d+):(\d+)$/, async (ctx) => {
   }
 
   const discountPct = normalizePercent(ctx.dbUser?.discountPercent ?? 0);
-  const finalPrice = applyDiscount(tariff.price, discountPct);
+  const effectivePrice = tariffEffectivePrice(tariff);
+  const finalPrice = applyDiscount(effectivePrice, discountPct);
 
   const kb = new InlineKeyboard()
     .text("✅ Принимаю условия", `rent:accept_safety:${boardId}:${tariffId}`)
@@ -54,8 +55,19 @@ rentalHandlers.callbackQuery(/^rent:pick_tariff:(\d+):(\d+)$/, async (ctx) => {
     .text("⬅️ Назад", `client:board_info:${boardId}`)
     .text("⬅️ Меню", "back:menu");
 
+  // Блок цены: акция + скидка клиента (в любом сочетании)
   let priceBlock: string;
-  if (discountPct > 0) {
+  const hasPromo = effectivePrice < tariff.price;
+  if (hasPromo && discountPct > 0) {
+    priceBlock =
+      `💰 Прайс: <s>${fmtPrice(tariff.price)}</s> → <b>${fmtPrice(effectivePrice)}</b> 🎁 <i>акция</i>\n` +
+      `🎁 Ваша скидка: <b>−${discountPct}%</b>\n` +
+      `💳 К оплате: <b>${fmtPrice(finalPrice)}</b>`;
+  } else if (hasPromo) {
+    priceBlock =
+      `💰 Прайс: <s>${fmtPrice(tariff.price)}</s> → <b>${fmtPrice(effectivePrice)}</b> 🎁 <i>акция</i>\n` +
+      `💳 К оплате: <b>${fmtPrice(finalPrice)}</b>`;
+  } else if (discountPct > 0) {
     priceBlock =
       `💰 Прайс: <s>${fmtPrice(tariff.price)}</s>\n` +
       `🎁 Ваша скидка: <b>−${discountPct}%</b>\n` +
@@ -141,18 +153,27 @@ rentalHandlers.callbackQuery(/^rent:accept_safety:(\d+):(\d+)$/, async (ctx) => 
 
   await rentalService.moveToWaitPayment(rental.id, ctx.dbUser!.id);
 
-  const priceToPay = rental.basePriceKgs ?? tariff.price;
-  const discountLine =
-    rental.discountPercent > 0
-      ? `\n🎁 Скидка клиента: <b>−${rental.discountPercent}%</b> (прайс ${fmtPrice(tariff.price)})`
-      : "";
+  // Строим блок «Тариф» с учётом акции и личной скидки
+  const effectivePrice = rental.tariffPriceKgs ?? tariff.price; // цена после акции, до скидки клиента
+  const originalPrice = rental.tariffOriginalPriceKgs; // цена до акции (null если акции не было)
+  const priceToPay = rental.basePriceKgs ?? effectivePrice;
+
+  let tariffBlock = `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})\n`;
+  if (originalPrice && originalPrice > effectivePrice) {
+    tariffBlock += `💰 Прайс: <s>${fmtPrice(originalPrice)}</s> → <b>${fmtPrice(effectivePrice)}</b> 🎁 <i>акция</i>\n`;
+  } else {
+    tariffBlock += `💰 Прайс: <b>${fmtPrice(effectivePrice)}</b>\n`;
+  }
+  if (rental.discountPercent > 0) {
+    tariffBlock += `🎁 Скидка клиента: <b>−${rental.discountPercent}%</b>\n`;
+  }
 
   await ctx.editMessageText(
     `📋 <b>Аренда #${rental.id}</b>\n\n` +
     `🏄 Доска: ${board.code}\n` +
     `📍 Точка: ${board.spot.name}\n` +
-    `⏱ Тариф: ${tariff.name} (${fmtDuration(tariff.durationMinutes)})${discountLine}\n` +
-    `💰 К оплате: <b>${fmtPrice(priceToPay)}</b>\n\n` +
+    tariffBlock +
+    `💳 К оплате: <b>${fmtPrice(priceToPay)}</b>\n\n` +
     `💳 Оплатите по QR-коду ниже через MBank.\n` +
     `После оплаты нажмите <b>«✅ Я оплатил»</b>.`,
     { parse_mode: "HTML" }

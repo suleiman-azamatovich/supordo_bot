@@ -20,17 +20,16 @@ export function mainMenuKeyboard(role: Role): InlineKeyboard {
   }
 
   if (role === Role.CASHIER) {
-    kb.text("✅ Проверка оплат", "cashier:payments").row();
+    kb.text("💳 Проверка оплат", "cashier:payments").row();
     kb.text("🔔 Уведомления", "cashier:notifications").row();
   }
 
   if (role === Role.ADMIN) {
     kb.text("🔔 Уведомления", "admin:notifications").text("🏄 Доски", "admin:boards").row();
-    kb.text("✅ Проверка оплат", "admin:cashbox").row();
-    kb.text("📜 История транзакций", "admin:transactions").row();
+    kb.text("💳 Проверка оплат", "admin:cashbox").row();
+    kb.text("🕒 История транзакций", "admin:transactions").row();
     kb.text("📊 Отчёты", "admin:reports").row();
-    kb.text("💰 Тарифы", "admin:tariffs").row();
-    kb.text("⚙️ Режим", "admin:mode").row();
+    kb.text("🏷️ Тарифы", "admin:tariffs").row();
   }
 
   kb.text("🧹 Убрать лишнее", "clear:chat").row();

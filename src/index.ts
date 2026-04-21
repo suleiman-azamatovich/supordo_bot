@@ -47,7 +47,7 @@ async function main() {
   // Error handler
   bot.catch((err) => {
     // Игнорируем просроченные callback-запросы (нажатые пока бот был выключен)
-    const desc = (err.error as any)?.description ?? "";
+    const desc = (err.error as { description?: string })?.description ?? "";
     if (typeof desc === "string" && desc.includes("query is too old")) {
       return;
     }
@@ -74,20 +74,33 @@ async function main() {
 
   console.log("🚀 Bot starting...");
 
-  // Определяем текущий режим
-  const testMode = await (await import("./services/rental")).isTestMode();
-  console.log(`⚙️ Режим: ${testMode ? "🧪 ТЕСТОВЫЙ" : "🟢 РАБОЧИЙ"}`);
-
   // Запуск автоматического завершения истёкших аренд
   const stopExpiryChecker = startExpiryChecker(bot.api);
   // Периодическая очистка in-memory кешей middleware (защита от утечек памяти)
   const stopMiddlewareMaintenance = startMiddlewareMaintenance();
 
   // Run with concurrent update processing
-  const runner = run(bot);
+  let runner = run(bot);
   console.log("✅ Bot started (runner mode)");
 
   let shuttingDown = false;
+
+  /** Авто-перезапуск runner при неожиданной остановке (сетевые сбои ECONNRESET и т.п.) */
+  const watchRunner = () => {
+    runner.task().then(() => {
+      if (!shuttingDown) {
+        console.error("[runner] Stopped unexpectedly, restarting in 5s...");
+        setTimeout(() => { runner = run(bot); watchRunner(); }, 5000);
+      }
+    }).catch((err) => {
+      if (!shuttingDown) {
+        console.error("[runner] Crashed, restarting in 5s...", err);
+        setTimeout(() => { runner = run(bot); watchRunner(); }, 5000);
+      }
+    });
+  };
+  watchRunner();
+
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;

@@ -17,14 +17,6 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { mainMenuKeyboard } from "../../ui/keyboards";
 import { handleRentalByQR } from "./helpers";
-import { isTestMode } from "../../services/rental";
-
-/** Строка режима работы для админа/кассира */
-async function modeLabel(role: string): Promise<string> {
-  if (role !== "ADMIN" && role !== "CASHIER") return "";
-  const test = await isTestMode();
-  return `\n⚙️ Режим: <b>${test ? "🧪 Тестовый" : "🟢 Рабочий"}</b>`;
-}
 
 export const startHandlers = new Composer<BotContext>();
 
@@ -40,10 +32,9 @@ startHandlers.command("start", async (ctx) => {
 
   const role = ctx.dbUser?.role ?? "CLIENT";
   const name = ctx.dbUser?.name ?? "друг";
-  const mode = await modeLabel(role);
 
   const sent = await ctx.reply(
-    `👋 Привет, <b>${name}</b>!\n\nДобро пожаловать в SUP-аренду.${mode}`,
+    `👋 Привет, <b>${name}</b>!\n\nДобро пожаловать в SUP-аренду.`,
     { parse_mode: "HTML", reply_markup: mainMenuKeyboard(role) }
   );
   ctx.session.lastBotMsgIds = [sent.message_id];
@@ -52,8 +43,7 @@ startHandlers.command("start", async (ctx) => {
 /** /menu — показ главного меню */
 startHandlers.command("menu", async (ctx) => {
   const role = ctx.dbUser?.role ?? "CLIENT";
-  const mode = await modeLabel(role);
-  const sent = await ctx.reply(`📋 <b>Главное меню</b>${mode}`, {
+  const sent = await ctx.reply(`📋 <b>Главное меню</b>`, {
     parse_mode: "HTML",
     reply_markup: mainMenuKeyboard(role),
   });
@@ -100,15 +90,14 @@ startHandlers.callbackQuery("back:menu", async (ctx) => {
   ctx.session.walkin = undefined;
   ctx.session.adminChat = undefined;
   ctx.session.clientChat = undefined;
-  const mode = await modeLabel(role);
   try {
-    await ctx.editMessageText(`📋 <b>Главное меню</b>${mode}`, {
+    await ctx.editMessageText(`📋 <b>Главное меню</b>`, {
       parse_mode: "HTML",
       reply_markup: mainMenuKeyboard(role),
     });
   } catch {
     try { await ctx.deleteMessage(); } catch { /* ignore */ }
-    await ctx.reply(`📋 <b>Главное меню</b>${mode}`, {
+    await ctx.reply(`📋 <b>Главное меню</b>`, {
       parse_mode: "HTML",
       reply_markup: mainMenuKeyboard(role),
     });

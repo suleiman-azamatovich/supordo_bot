@@ -34,8 +34,10 @@ export interface TariffDraft {
   name?: string;
   durationMinutes?: number;
   price?: number;
+  /** акционная цена (null = убрать акцию) */
+  promoPrice?: number | null;
   /** поле, для которого ожидается кастомный текстовый ввод */
-  pendingField?: 'name' | 'duration' | 'price';
+  pendingField?: 'name' | 'duration' | 'price' | 'promo';
 }
 
 /** Черновик скидки на конкретную аренду (для multi-step ввода в разделе «Доски») */

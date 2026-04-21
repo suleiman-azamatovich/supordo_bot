@@ -3,7 +3,6 @@
  *
  * Обрабатывает:
  *  - admin:dashboard — основная панель со сводкой по аренде, оплатам, возвратам
- *  - admin:toggle_mode — переключение между режимами ТЕСТ / РАБОТА
  *  - admin:notifications — уведомления админа за 24 часа
  *
  * Панель показывает:
@@ -12,11 +11,6 @@
  *  - ожидающие возврата
  *  - активные аренды с таймерами
  *  - количество свободных досок
- *  - текущий режим (тест/работа)
- *
- * Переключение ТЕСТ/РАБОТА меняет длительность всех тарифов:
- *  - РАБОТА: 1ч / 1.5ч / 2ч
- *  - ТЕСТ: 1мин / 2мин / 3мин
  */
 
 import { Composer, GrammyError, InlineKeyboard } from "grammy";
@@ -25,9 +19,8 @@ import { prisma } from "../../db/prisma";
 import {
   fmtDuration, fmtPrice, escapeHtml, paginate, addPaginationRow,
 } from "../../ui/helpers";
-import * as rentalService from "../../services/rental";
 import * as audit from "../../services/audit";
-import { getNotifications } from "../../services/notify";
+import { getNotifications, markNotificationsRead } from "../../services/notify";
 import { startOfDayBishkek } from "../../services/reports";
 import { mainMenuKeyboard } from "../../ui/keyboards";
 import { RentalStatus, BoardStatus, PaymentProofStatus, AuditAction } from "@prisma/client";
@@ -35,38 +28,21 @@ import { config } from "../../bot/config";
 
 export const dashboardHandlers = new Composer<BotContext>();
 
-/** Тарифы для рабочего режима */
-const WORK_TARIFFS = [
-  { durationMinutes: 60, name: "1 час" },
-  { durationMinutes: 90, name: "1,5 часа" },
-  { durationMinutes: 120, name: "2 часа" },
-];
-
-/** Тарифы для тестового режима (укороченные для проверки) */
-const TEST_TARIFFS = [
-  { durationMinutes: 1, name: "1 мин" },
-  { durationMinutes: 2, name: "2 мин" },
-  { durationMinutes: 3, name: "3 мин" },
-];
-
 /**
  * Рендерит панель управления — сводку по текущему состоянию системы.
- * Используется в admin:dashboard и admin:toggle_mode.
  */
 async function renderDashboard(ctx: BotContext) {
-  const [pendingPayments, activeRentals, waitReturns, availableBoards, totalBoards, pendingExtensions, testMode] = await Promise.all([
+  const [pendingPayments, activeRentals, waitReturns, availableBoards, totalBoards, pendingExtensions] = await Promise.all([
     prisma.paymentProof.count({ where: { status: PaymentProofStatus.SUBMITTED } }),
     prisma.rental.count({ where: { status: RentalStatus.RENTED } }),
     prisma.rental.count({ where: { status: RentalStatus.WAIT_RETURN } }),
     prisma.board.count({ where: { status: BoardStatus.AVAILABLE } }),
     prisma.board.count(),
     prisma.rental.count({ where: { pendingExtraMinutes: { not: null } } }),
-    rentalService.isTestMode(),
   ]);
 
   const now = new Date();
-  const modeLabel = testMode ? "🧪 Тестовый режим" : "🟢 Рабочий режим";
-  let text = `📋 <b>Панель управления</b>\n⚙️ Режим: <b>${modeLabel}</b>\n\n`;
+  let text = `📋 <b>Панель управления</b>\n\n`;
 
   if (pendingPayments > 0) {
     text += `🔔 <b>Ожидают подтверждения оплаты: ${pendingPayments}</b>\n`;
@@ -127,16 +103,13 @@ async function renderDashboard(ctx: BotContext) {
   }
 
   const kb = new InlineKeyboard();
-  if (pendingPayments > 0) {
-    kb.text(`💳 Оплаты (${pendingPayments})`, "admin:payments").row();
-  }
+  const cashboxLabel = pendingPayments > 0
+    ? `💳 Касса — ожидает ${pendingPayments}`
+    : `💳 Касса`;
+  kb.text(cashboxLabel, "admin:cashbox").row();
   if (activeRentals > 0) {
     kb.text(`🏄 Все в аренде (${activeRentals})`, "admin:boards").row();
   }
-  const modeBtn = testMode
-    ? "🟢 Режим → Рабочий"
-    : "🧪 Режим → Тестовый";
-  kb.text(modeBtn, "admin:toggle_mode").row();
   kb.text("⬅️ Меню", "back:menu").text("🧹 Убрать лишнее", "clear:chat");
 
   try {
@@ -151,82 +124,6 @@ async function renderDashboard(ctx: BotContext) {
 dashboardHandlers.callbackQuery("admin:dashboard", async (ctx) => {
   await ctx.answerCallbackQuery();
   await renderDashboard(ctx);
-});
-
-/**
- * Экран выбора режима — показывает текущий и кнопки переключения.
- */
-dashboardHandlers.callbackQuery("admin:mode", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const testMode = await rentalService.isTestMode();
-  const current = testMode ? "🧪 Тестовый" : "🟢 Рабочий";
-
-  const kb = new InlineKeyboard();
-  if (testMode) {
-    kb.text("🟢 Переключить на Рабочий", "admin:set_mode:work").row();
-  } else {
-    kb.text("🧪 Переключить на Тестовый", "admin:set_mode:test").row();
-  }
-  kb.text("⬅️ Меню", "back:menu");
-
-  await ctx.editMessageText(
-    `⚙️ <b>Режим работы</b>\n\nТекущий: <b>${current}</b>`,
-    { parse_mode: "HTML", reply_markup: kb },
-  );
-});
-
-/**
- * Переключение режима ТЕСТ ↔ РАБОТА.
- *
- * Обновляет длительность и название первых N тарифов в БД.
- * Сбрасывает кэш isTestMode и записывает действие в аудит.
- */
-dashboardHandlers.callbackQuery(/^admin:set_mode:(work|test)$/, async (ctx) => {
-  const wantTest = ctx.match[1] === "test";
-  const testMode = await rentalService.isTestMode();
-
-  // Уже в нужном режиме
-  if (wantTest === testMode) {
-    await ctx.answerCallbackQuery({ text: "Уже в этом режиме" });
-    return;
-  }
-
-  const target = wantTest ? TEST_TARIFFS : WORK_TARIFFS;
-
-  const existing = await prisma.tariff.findMany({ orderBy: { price: "asc" } });
-
-  await Promise.all(
-    existing.slice(0, target.length).map((t, i) =>
-      prisma.tariff.update({
-        where: { id: t.id },
-        data: { durationMinutes: target[i].durationMinutes, name: target[i].name },
-      })
-    )
-  );
-
-  const newMode = wantTest ? "🧪 Тестовый" : "🟢 Рабочий";
-  rentalService.clearTestModeCache();
-  await audit.log(ctx.dbUser!.id, "system", 0, AuditAction.MODE_TOGGLED, { mode: newMode });
-  await ctx.answerCallbackQuery({ text: `Режим: ${newMode}` });
-
-  // Показываем экран режима с обновлённым состоянием
-  const kb = new InlineKeyboard();
-  if (wantTest) {
-    kb.text("🟢 Переключить на Рабочий", "admin:set_mode:work").row();
-  } else {
-    kb.text("🧪 Переключить на Тестовый", "admin:set_mode:test").row();
-  }
-  kb.text("⬅️ Меню", "back:menu");
-
-  try {
-    await ctx.editMessageText(
-      `⚙️ <b>Режим работы</b>\n\nТекущий: <b>${newMode}</b>\n\n✅ Режим переключён.`,
-      { parse_mode: "HTML", reply_markup: kb },
-    );
-  } catch (e) {
-    if (e instanceof GrammyError && e.description.includes("message is not modified")) return;
-    throw e;
-  }
 });
 
 /** Определяет иконку по содержимому уведомления */
@@ -249,6 +146,7 @@ dashboardHandlers.callbackQuery(/^admin:notifications(:(\d+))?$/, async (ctx) =>
   const page = parseInt(ctx.match?.[2] ?? "1");
   const userId = ctx.dbUser!.id;
   const allItems = await getNotifications(userId);
+  await markNotificationsRead(userId).catch(() => { });
 
   const paged = paginate(allItems, page, 8);
   // Внутри страницы новые внизу (удобно читать)
@@ -296,6 +194,7 @@ const TX_ACTIONS = [
   AuditAction.PAYMENT_REJECTED,
   AuditAction.EXTENDED,
   AuditAction.CLOSE_OVERDUE,
+  AuditAction.WALKIN_CREATED,
 ];
 
 /** Форматирование времени */
@@ -347,6 +246,11 @@ function txButtonLabel(log: { action: AuditAction; metaJson: unknown }): { icon:
         return { icon: "⏱", label: `Продление +${fmtDuration(net)}${cost}` };
       }
       return { icon: "⚠️", label: `Закрытие просрочки${cost}` };
+    }
+    case AuditAction.WALKIN_CREATED: {
+      const clientName = typeof meta?.clientName === "string" ? ` — ${meta.clientName}` : "";
+      const price = typeof meta?.basePrice === "number" ? ` ${fmtPrice(meta.basePrice)}` : "";
+      return { icon: "🚶", label: `Walk-in${clientName}${price}` };
     }
     default:
       return { icon: "📝", label: String(log.action) };
@@ -473,7 +377,12 @@ dashboardHandlers.callbackQuery(/^admin:tx:(\d+)$/, async (ctx) => {
         text += `🏄 <b>Доска:</b> ${rental.board.code}\n`;
         text += `👤 <b>Клиент:</b> ${escapeHtml(rental.clientName ?? rental.user.name)}\n`;
         if (rental.tariff) {
-          const netPrice = rental.basePriceKgs ?? rental.tariffPriceKgs ?? rental.tariff.price;
+          const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
+          const originalPrice = rental.tariffOriginalPriceKgs;
+          const netPrice = rental.basePriceKgs ?? listPrice;
+          if (originalPrice && originalPrice > listPrice) {
+            text += `🎁 <b>Акция:</b> <s>${fmtPrice(originalPrice)}</s> → <b>${fmtPrice(listPrice)}</b>\n`;
+          }
           text += `⏱ <b>Тариф:</b> ${rental.tariff.name} — ${fmtPrice(netPrice)}`;
           if ((rental.discountPercent ?? 0) > 0) {
             text += ` 🎁 −${rental.discountPercent}%`;
@@ -531,6 +440,37 @@ dashboardHandlers.callbackQuery(/^admin:tx:(\d+)$/, async (ctx) => {
       text += `\n<b>── Аренда ──</b>\n`;
       text += `🏄 <b>Доска:</b> ${rental.board.code}\n`;
       text += `👤 <b>Клиент:</b> ${escapeHtml(rental.clientName ?? rental.user.name)}\n`;
+    }
+  }
+
+  // ─── WALKIN_CREATED ───
+  if (log.action === AuditAction.WALKIN_CREATED) {
+    const clientName = typeof meta?.clientName === "string" ? meta.clientName : "—";
+    const basePrice = typeof meta?.basePrice === "number" ? meta.basePrice : 0;
+    const tariffPriceMeta = typeof meta?.tariffPrice === "number" ? meta.tariffPrice : null;
+    const promoPriceMeta = typeof meta?.promoPrice === "number" ? meta.promoPrice : null;
+
+    text += `\n👤 <b>Клиент:</b> ${escapeHtml(clientName)}\n`;
+    // Показываем акцию, если она применялась
+    if (tariffPriceMeta && promoPriceMeta != null && promoPriceMeta < tariffPriceMeta) {
+      text += `🎁 <b>Акция:</b> <s>${fmtPrice(tariffPriceMeta)}</s> → <b>${fmtPrice(promoPriceMeta)}</b>\n`;
+    }
+    text += `💵 <b>Сумма:</b> ${fmtPrice(basePrice)}\n`;
+    text += `🛡 <b>Выдал:</b> ${escapeHtml(log.actor.name)} <i>[Админ]</i>\n`;
+
+    const rental = await prisma.rental.findUnique({
+      where: { id: log.entityId },
+      include: { board: true, tariff: true },
+    });
+    if (rental) {
+      text += `\n<b>── Аренда ──</b>\n`;
+      text += `🏄 <b>Доска:</b> ${rental.board.code}\n`;
+      if (rental.tariff) {
+        text += `⏱ <b>Тариф:</b> ${rental.tariff.name}\n`;
+      }
+      if (rental.startAt) {
+        text += `🕐 <b>Старт:</b> ${fmtTime(rental.startAt)}\n`;
+      }
     }
   }
 

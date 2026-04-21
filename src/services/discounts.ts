@@ -12,7 +12,7 @@
  *  - Все изменения логируются в AuditLog (action=DISCOUNT_SET).
  */
 
-import { AuditAction, User } from "@prisma/client";
+import { AuditAction, Prisma, User } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import * as audit from "./audit";
 import { normalizePercent } from "./pricing";
@@ -61,7 +61,7 @@ export async function searchClients(query: string, limit = 10): Promise<User[]> 
 
   // Если чисто цифровой ввод — ищем по tgId или phone
   const isNumeric = /^\d+$/.test(q);
-  const where: any = isNumeric
+  const where: Prisma.UserWhereInput = isNumeric
     ? {
       OR: [
         { tgId: BigInt(q) },

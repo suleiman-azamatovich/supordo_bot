@@ -23,7 +23,7 @@ import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import {
   fmtPrice, fmtDuration, fmtDate,
-  escapeHtml, paginate, addPaginationRow,
+  escapeHtml, paginate, addPaginationRow, fmtTariffButton, fmtTariffPriceLine,
 } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
 import { BoardStatus, Role } from "@prisma/client";
@@ -83,7 +83,7 @@ walkinHandlers.callbackQuery(/^walkin:board:(\d+)$/, async (ctx) => {
 
   const kb = new InlineKeyboard();
   for (const t of tariffs) {
-    kb.text(`${t.name} — ${fmtPrice(t.price)}`, `walkin:tariff:${t.id}`).row();
+    kb.text(fmtTariffButton(t), `walkin:tariff:${t.id}`).row();
   }
   kb.row().text("⬅️ Назад", "seller:walkin").text("⬅️ Меню", "back:menu");
 
@@ -145,7 +145,8 @@ walkinHandlers.on("message:text", async (ctx, next) => {
     await ctx.reply(
       `✅ <b>Аренда оформлена</b>\n\n` +
       `Доска: ${board.code}\n` +
-      `Тариф: ${tariff.name} — ${fmtPrice(tariff.price)}\n` +
+      `Тариф: ${tariff.name} · ${fmtDuration(tariff.durationMinutes)}\n` +
+      fmtTariffPriceLine(tariff, "Сумма") + `\n` +
       `Клиент: ${escapeHtml(clientName)}\n` +
       `Старт: ${fmtDate(rental.startAt!)}`,
       {

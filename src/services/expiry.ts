@@ -9,7 +9,7 @@
  *
  * @module
  */
-import { RentalStatus, BoardStatus, Role } from "@prisma/client";
+import { RentalStatus, BoardStatus, Role, PaymentProofKind, PaymentProofStatus } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
 import { notify, clearOldNotifications } from "./notify";
@@ -69,11 +69,13 @@ export function startExpiryChecker(api: Api) {
         }
 
         const now = new Date();
-        const END_GRACE_MS = await getEndGraceMs();
-        const UNPAID_TIMEOUT_MS = await getUnpaidTimeoutMs();
-        const graceLabel = END_GRACE_MS >= 60_000
-          ? `${Math.round(END_GRACE_MS / 60_000)} мин`
-          : `${Math.round(END_GRACE_MS / 1_000)} сек`;
+        const END_GRACE_MS = getEndGraceMs();
+        const UNPAID_TIMEOUT_MS = getUnpaidTimeoutMs();
+        const graceLabel = END_GRACE_MS === 0
+          ? "без грейса"
+          : END_GRACE_MS >= 60_000
+            ? `${Math.round(END_GRACE_MS / 60_000)} мин`
+            : `${Math.round(END_GRACE_MS / 1_000)} сек`;
 
         // --- Cancel unpaid rentals that have been stuck for too long ---
         await cancelStaleRentals(api, now, UNPAID_TIMEOUT_MS);
@@ -265,7 +267,7 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
 
   const staleRentals = await prisma.rental.findMany({
     where: {
-      status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT, RentalStatus.WAIT_ADMIN] },
+      status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT] },
       createdAt: { lt: cutoff },
     },
     include: { board: true, user: true },
@@ -286,10 +288,10 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
         await tx.paymentProof.updateMany({
           where: {
             refId: rental.id,
-            kind: { in: ["RENTAL", "EXTENSION"] },
-            status: "SUBMITTED",
+            kind: { in: [PaymentProofKind.RENTAL, PaymentProofKind.EXTENSION] },
+            status: PaymentProofStatus.SUBMITTED,
           },
-          data: { status: "REJECTED" },
+          data: { status: PaymentProofStatus.REJECTED },
         });
       });
 
@@ -314,8 +316,8 @@ async function rejectStaleExtensions(api: Api, now: Date, UNPAID_TIMEOUT_MS: num
 
   const staleProofs = await prisma.paymentProof.findMany({
     where: {
-      kind: "EXTENSION",
-      status: "SUBMITTED",
+      kind: PaymentProofKind.EXTENSION,
+      status: PaymentProofStatus.SUBMITTED,
       createdAt: { lt: cutoff },
     },
     include: { user: true },
@@ -326,11 +328,11 @@ async function rejectStaleExtensions(api: Api, now: Date, UNPAID_TIMEOUT_MS: num
       await prisma.$transaction(async (tx) => {
         await tx.paymentProof.update({
           where: { id: proof.id },
-          data: { status: "REJECTED" },
+          data: { status: PaymentProofStatus.REJECTED },
         });
         await tx.rental.update({
           where: { id: proof.refId },
-          data: { pendingExtraMinutes: null },
+          data: { pendingExtraMinutes: null, pendingExtraAmount: null },
         });
       });
 

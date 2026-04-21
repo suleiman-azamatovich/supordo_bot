@@ -9,7 +9,7 @@
 
 import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
-import { getNotifications } from "../../services/notify";
+import { getNotifications, markNotificationsRead } from "../../services/notify";
 import { config } from "../../bot/config";
 import { addPaginationRow, paginate } from "../../ui/helpers";
 
@@ -34,6 +34,7 @@ notificationsHandlers.callbackQuery(/^client:notifications(:(\d+))?$/, async (ct
   const page = parseInt(ctx.match?.[2] ?? "1");
   const userId = ctx.dbUser!.id;
   const allItems = await getNotifications(userId);
+  await markNotificationsRead(userId).catch(() => { });
 
   const paged = paginate(allItems, page, 8);
   // Внутри страницы новые внизу (удобно читать)

@@ -56,6 +56,40 @@ export function fmtPrice(amount: number): string {
   return `${amount} сом`;
 }
 
+/**
+ * Зачёркивает текст с помощью комбинирующего символа U+0336.
+ * Работает даже в inline-кнопках Telegram, где HTML не поддерживается.
+ */
+export function strike(text: string): string {
+  let out = "";
+  for (const ch of text) out += ch + "\u0336";
+  return out;
+}
+
+/**
+ * Подпись кнопки выбора тарифа.
+ * Если задана акционная цена (promoPrice < price) — отображаем акцию
+ * с зачёркнутой старой ценой (через Unicode U+0336).
+ */
+export function fmtTariffButton(t: { name: string; price: number; promoPrice?: number | null }): string {
+  if (t.promoPrice != null && t.promoPrice < t.price) {
+    return `🎁 ${t.name} — ${strike(fmtPrice(t.price))} ${fmtPrice(t.promoPrice)}`;
+  }
+  return `${t.name} — ${fmtPrice(t.price)}`;
+}
+
+/**
+ * Блок цены тарифа в HTML-сообщении.
+ * Возвращает строку типа «💰 Прайс: <s>900 сом</s> → <b>800 сом</b> 🎁 акция»
+ * или просто «💰 Прайс: <b>900 сом</b>».
+ */
+export function fmtTariffPriceLine(t: { price: number; promoPrice?: number | null }, label = "Прайс"): string {
+  if (t.promoPrice != null && t.promoPrice < t.price) {
+    return `💰 ${label}: <s>${fmtPrice(t.price)}</s> → <b>${fmtPrice(t.promoPrice)}</b> 🎁 <i>акция</i>`;
+  }
+  return `💰 ${label}: <b>${fmtPrice(t.price)}</b>`;
+}
+
 /** Escape HTML special characters to prevent injection in Telegram HTML messages */
 export function escapeHtml(text: string): string {
   return text

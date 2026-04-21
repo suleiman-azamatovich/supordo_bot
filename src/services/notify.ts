@@ -92,6 +92,14 @@ export async function getNotifications(userId: number) {
   });
 }
 
+/** Пометить все непрочитанные уведомления пользователя как прочитанные */
+export async function markNotificationsRead(userId: number): Promise<void> {
+  await prisma.notification.updateMany({
+    where: { userId, isRead: false },
+    data: { isRead: true },
+  });
+}
+
 /** Clear old notifications (>24h) */
 export async function clearOldNotifications() {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);

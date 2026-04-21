@@ -111,7 +111,10 @@ async function renderList(ctx: BotContext) {
       } else {
         for (const t of tariffs) {
           const badge = t.isActive ? "✅" : "🔒";
-          text += `${badge} <b>${escapeHtml(t.name)}</b> — ${fmtDuration(t.durationMinutes)} · ${fmtPrice(t.price)}\n`;
+          const promoLine = t.promoPrice != null && t.promoPrice < t.price
+            ? ` 🎁 <s>${fmtPrice(t.price)}</s> <b>${fmtPrice(t.promoPrice)}</b>`
+            : ` · ${fmtPrice(t.price)}`;
+          text += `${badge} <b>${escapeHtml(t.name)}</b> — ${fmtDuration(t.durationMinutes)}${promoLine}\n`;
         }
       }
 
@@ -119,7 +122,10 @@ async function renderList(ctx: BotContext) {
       let col = 0;
       for (const t of tariffs) {
         const icon = t.isActive ? "✏️" : "🔒";
-        const label = `${icon} ${t.name} · ${fmtPrice(t.price)}`;
+        const priceStr = t.promoPrice != null && t.promoPrice < t.price
+          ? `🎁 ${fmtPrice(t.promoPrice)}`
+          : fmtPrice(t.price);
+        const label = `${icon} ${t.name} · ${priceStr}`;
         kb.text(label, `admin:tf_card:${t.id}`);
         col++;
         if (col === 2) {
@@ -157,19 +163,29 @@ async function renderCard(ctx: BotContext, tariffId: number) {
   const statusLine = t.isActive ? "✅ Активен" : "🔒 Отключён";
   const spotLine = spot ? `📍 ${escapeHtml(spot.name)}\n` : "";
 
+  const hasPromo = t.promoPrice != null && t.promoPrice < t.price;
+  const priceLine = hasPromo
+    ? `💵 <s>${fmtPrice(t.price)}</s> → <b>${fmtPrice(t.promoPrice!)}</b> 🎁 <i>акция</i>\n`
+    : `💵 <b>${fmtPrice(t.price)}</b>\n`;
+
   const text =
     `💰 <b>${escapeHtml(t.name)}</b>\n\n` +
     spotLine +
     `⏱ <b>${fmtDuration(t.durationMinutes)}</b>\n` +
-    `💵 <b>${fmtPrice(t.price)}</b>\n` +
+    priceLine +
     `Статус: ${statusLine}\n` +
     `Аренд с этим тарифом: <b>${related}</b>\n\n` +
     `<i>Нажмите на поле, чтобы изменить.</i>`;
+
+  const promoBtnLabel = hasPromo
+    ? `🎁 Акция: ${fmtPrice(t.promoPrice!)} (изменить)`
+    : `🎁 Установить акцию`;
 
   const kb = new InlineKeyboard()
     .text(`🏷 Имя`, `admin:tf_edit:name:${t.id}`).row()
     .text(`⏱ Длительность`, `admin:tf_edit:duration:${t.id}`)
     .text(`💵 Цена`, `admin:tf_edit:price:${t.id}`).row()
+    .text(promoBtnLabel, `admin:tf_edit:promo:${t.id}`).row()
     .text(t.isActive ? "🔒 Отключить" : "✅ Включить", `admin:tf_toggle:${t.id}`)
     .text("🗑 Удалить", `admin:tf_delete:${t.id}`).row()
     .text("⬅️ К списку", "admin:tariffs");
@@ -199,9 +215,9 @@ tariffsHandlers.callbackQuery(/^admin:tf_new:(\d+)$/, async (ctx) => {
 // СТАРТ РЕДАКТИРОВАНИЯ ПОЛЯ
 // ────────────────────────────────────────────────────────────
 
-tariffsHandlers.callbackQuery(/^admin:tf_edit:(name|duration|price):(\d+)$/, async (ctx) => {
+tariffsHandlers.callbackQuery(/^admin:tf_edit:(name|duration|price|promo):(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
-  const field = ctx.match[1] as "name" | "duration" | "price";
+  const field = ctx.match[1] as "name" | "duration" | "price" | "promo";
   const tariffId = parseInt(ctx.match[2], 10);
   const t = await prisma.tariff.findUniqueOrThrow({ where: { id: tariffId } });
 
@@ -212,11 +228,13 @@ tariffsHandlers.callbackQuery(/^admin:tf_edit:(name|duration|price):(\d+)$/, asy
     name: t.name,
     durationMinutes: t.durationMinutes,
     price: t.price,
+    promoPrice: t.promoPrice,
   };
   ctx.session.inputMode = undefined;
 
   if (field === "duration") return renderDurationPicker(ctx);
   if (field === "price") return renderPricePicker(ctx);
+  if (field === "promo") return renderPromoPicker(ctx);
   // name
   return renderNamePicker(ctx);
 });
@@ -575,6 +593,95 @@ tariffsHandlers.callbackQuery("admin:tf_create_confirm", async (ctx) => {
 });
 
 // ────────────────────────────────────────────────────────────
+// ПИКЕР АКЦИИ (promoPrice)
+// ────────────────────────────────────────────────────────────
+
+/** Быстрые скидки относительно price: 10/15/20/25% вниз */
+const PROMO_DISCOUNT_PRESETS = [10, 15, 20, 25];
+
+async function renderPromoPicker(ctx: BotContext) {
+  const draft = ctx.session.tariffDraft;
+  if (!draft || draft.tariffId === undefined) return;
+
+  const t = await prisma.tariff.findUniqueOrThrow({ where: { id: draft.tariffId } });
+  const hasPromo = t.promoPrice != null && t.promoPrice < t.price;
+
+  const header = hasPromo
+    ? `🎁 <b>Акция на «${escapeHtml(t.name)}»</b>\n\nТекущая акция: <s>${fmtPrice(t.price)}</s> → <b>${fmtPrice(t.promoPrice!)}</b>`
+    : `🎁 <b>Установить акцию для «${escapeHtml(t.name)}»</b>\n\nОбычная цена: <b>${fmtPrice(t.price)}</b>`;
+
+  const text =
+    `${header}\n\n` +
+    `<i>Выберите скидку в процентах или введите свою цену.</i>`;
+
+  const kb = new InlineKeyboard();
+
+  // Кнопки быстрых скидок (показывают итоговую цену)
+  for (const pct of PROMO_DISCOUNT_PRESETS) {
+    const promo = Math.round((t.price * (100 - pct)) / 100);
+    const mark = t.promoPrice === promo ? "• " : "";
+    kb.text(`${mark}−${pct}% → ${fmtPrice(promo)}`, `admin:tf_promo_set:${promo}`);
+  }
+  kb.row();
+  kb.text("✏️ Своя цена", "admin:tf_promo_custom").row();
+  if (hasPromo) {
+    kb.text("❌ Убрать акцию", "admin:tf_promo_clear").row();
+  }
+  kb.text("⬅️ К тарифу", `admin:tf_card:${t.id}`);
+
+  await safeEdit(ctx, text, kb);
+}
+
+/** Применить промо-цену пресетом */
+tariffsHandlers.callbackQuery(/^admin:tf_promo_set:(\d+)$/, async (ctx) => {
+  const draft = ctx.session.tariffDraft;
+  if (!draft || draft.tariffId === undefined) {
+    await ctx.answerCallbackQuery();
+    return;
+  }
+  const promo = parseInt(ctx.match[1], 10);
+  await updateTariff(draft.tariffId, { promoPrice: promo }, ctx.dbUser!.id);
+  await ctx.answerCallbackQuery(`🎁 Акция установлена: ${fmtPrice(promo)}`).catch(() => { });
+  const id = draft.tariffId;
+  resetDraft(ctx);
+  return renderCard(ctx, id);
+});
+
+/** Убрать акцию */
+tariffsHandlers.callbackQuery("admin:tf_promo_clear", async (ctx) => {
+  const draft = ctx.session.tariffDraft;
+  if (!draft || draft.tariffId === undefined) {
+    await ctx.answerCallbackQuery();
+    return;
+  }
+  await updateTariff(draft.tariffId, { promoPrice: null }, ctx.dbUser!.id);
+  await ctx.answerCallbackQuery("❌ Акция убрана").catch(() => { });
+  const id = draft.tariffId;
+  resetDraft(ctx);
+  return renderCard(ctx, id);
+});
+
+/** Ручной ввод промо-цены */
+tariffsHandlers.callbackQuery("admin:tf_promo_custom", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const draft = ctx.session.tariffDraft;
+  if (!draft || draft.tariffId === undefined) return;
+
+  draft.pendingField = "promo";
+  ctx.session.inputMode = "tariff_text";
+
+  const t = await prisma.tariff.findUniqueOrThrow({ where: { id: draft.tariffId } });
+  const kb = new InlineKeyboard().text("❌ Отмена", `admin:tf_edit:promo:${t.id}`);
+  await safeEdit(
+    ctx,
+    `✏️ <b>Акционная цена</b>\n\n` +
+    `Обычная цена: <b>${fmtPrice(t.price)}</b>\n\n` +
+    `Пришлите акционную цену в сомах (меньше ${fmtPrice(t.price)}).`,
+    kb,
+  );
+});
+
+// ────────────────────────────────────────────────────────────
 // ВКЛ/ВЫКЛ, УДАЛЕНИЕ
 // ────────────────────────────────────────────────────────────
 
@@ -683,6 +790,24 @@ tariffsHandlers.on("message:text", async (ctx, next) => {
         return renderCard(ctx, id);
       }
       return renderPricePicker(ctx);
+    }
+
+    if (field === "promo") {
+      if (!draft.tariffId) return;
+      const p = parseInt(raw.replace(/\s+/g, ""), 10);
+      if (!Number.isInteger(p) || p < 0 || p > PRICE_MAX) {
+        return ctx.reply(`⚠️ Введите целое число от 0 до ${PRICE_MAX}.`);
+      }
+      const current = await prisma.tariff.findUniqueOrThrow({ where: { id: draft.tariffId } });
+      if (p >= current.price) {
+        return ctx.reply(`⚠️ Акционная цена должна быть меньше обычной (${fmtPrice(current.price)}).`);
+      }
+      await updateTariff(draft.tariffId, { promoPrice: p }, ctx.dbUser!.id);
+      draft.pendingField = undefined;
+      ctx.session.inputMode = undefined;
+      const id = draft.tariffId;
+      resetDraft(ctx);
+      return renderCard(ctx, id);
     }
   } catch (e: any) {
     return ctx.reply(`⚠️ Ошибка: ${escapeHtml(e.message ?? "неизвестно")}`);

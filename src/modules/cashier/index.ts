@@ -16,7 +16,7 @@ import { BotContext } from "../../bot/context";
 import { guardRole } from "../../bot/middleware";
 import { prisma } from "../../db/prisma";
 import { fmtPrice, addPaginationRow } from "../../ui/helpers";
-import { getNotifications } from "../../services/notify";
+import { getNotifications, markNotificationsRead } from "../../services/notify";
 import * as paymentService from "../../services/payment";
 import { Role, PaymentProofStatus } from "@prisma/client";
 import { config } from "../../bot/config";
@@ -63,7 +63,7 @@ async function renderCashierPayments(ctx: BotContext, page: number) {
     });
     const kindLabel = p.kind === "OVERDUE" ? "⚠️ Просрочка"
       : p.kind === "EXTENSION" ? "⏱ Продление"
-      : "🏄 Аренда";
+        : "🏄 Аренда";
     const boardCode = rental?.board?.code ?? "—";
     const tariffInfo = rental?.tariff ? ` · ${rental.tariff.durationMinutes} мин` : "";
     const extInfo = p.kind === "EXTENSION" && rental?.pendingExtraMinutes
@@ -153,7 +153,7 @@ cashierModule.callbackQuery(/^cashier:history(:(\d+))?$/, async (ctx) => {
       const statusIcon = p.status === PaymentProofStatus.APPROVED ? "✅" : "❌";
       const kindLabel = p.kind === "OVERDUE" ? "просрочка"
         : p.kind === "EXTENSION" ? "продление"
-        : "аренда";
+          : "аренда";
       const time = p.reviewedAt!.toLocaleTimeString("ru-RU", {
         timeZone: config.TIMEZONE,
         hour: "2-digit",
@@ -175,6 +175,7 @@ cashierModule.callbackQuery("cashier:notifications", async (ctx) => {
   await ctx.answerCallbackQuery();
   const userId = ctx.dbUser!.id;
   const items = await getNotifications(userId);
+  await markNotificationsRead(userId).catch(() => { });
 
   let text = "🔔 <b>Уведомления</b>\n\n";
   if (items.length === 0) {

@@ -48,7 +48,7 @@ paymentActionsHandlers.callbackQuery(/^pay:approve:(\d+)$/, async (ctx) => {
         include: { board: true, spot: true, user: true, tariff: true },
       });
       if (rental) {
-        const graceMs = await rentalService.getStartGraceMs();
+        const graceMs = rentalService.getStartGraceMs();
         const graceLabel = graceMs >= 60_000
           ? `${Math.round(graceMs / 60_000)} минут`
           : `${Math.round(graceMs / 1_000)} секунд`;

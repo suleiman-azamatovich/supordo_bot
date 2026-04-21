@@ -12,7 +12,7 @@ import { InlineKeyboard, InputFile } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { BoardStatus, Role } from "@prisma/client";
-import { fmtPrice, fmtDuration, escapeHtml } from "../../ui/helpers";
+import { fmtPrice, fmtDuration, escapeHtml, fmtTariffButton } from "../../ui/helpers";
 
 /** Путь к файлу QR-кода MBank на диске */
 const MBANK_QR_PATH = path.join(__dirname, "..", "..", "..", "qr-bank", "IMG-20260406-WA0012.jpg");
@@ -57,16 +57,26 @@ export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
     }
 
     const kb = new InlineKeyboard();
+    let tariffList = "";
     for (const t of tariffs) {
-      kb.text(`${t.name} — ${fmtPrice(t.price)}`, `walkin:tariff:${t.id}`).row();
+      const hasPromo = t.promoPrice != null && t.promoPrice < t.price;
+      kb.text(fmtTariffButton(t), `walkin:tariff:${t.id}`).row();
+
+      if (hasPromo) {
+        tariffList += `🎁 <b>${escapeHtml(t.name)}</b> · ${fmtDuration(t.durationMinutes)}\n`;
+        tariffList += `   <s>${fmtPrice(t.price)}</s> → <b>${fmtPrice(t.promoPrice!)}</b> <i>акция</i>\n\n`;
+      } else {
+        tariffList += `• <b>${escapeHtml(t.name)}</b> · ${fmtDuration(t.durationMinutes)} — <b>${fmtPrice(t.price)}</b>\n\n`;
+      }
     }
     kb.text("⬅️ Меню", "back:menu");
 
     return ctx.reply(
       `➕ <b>Выдать доску клиенту</b>\n\n` +
       `Доска: <b>${board.code}</b>\n` +
-      `📍 Точка: ${board.spot.name}\n\n` +
-      `Выберите тариф:`,
+      `📍 Точка: ${escapeHtml(board.spot.name)}\n\n` +
+      `<b>Выберите тариф:</b>\n\n` +
+      tariffList,
       { parse_mode: "HTML", reply_markup: kb }
     );
   }
@@ -82,16 +92,13 @@ export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
 
   const kb = new InlineKeyboard();
   for (const t of tariffs) {
-    kb.text(
-      `${t.name} — ${fmtPrice(t.price)}`,
-      `rent:pick_tariff:${board.id}:${t.id}`
-    ).row();
+    kb.text(fmtTariffButton(t), `rent:pick_tariff:${board.id}:${t.id}`).row();
   }
   kb.text("⬅️ Меню", "back:menu");
 
   await ctx.reply(
     `🏄 Доска: <b>${board.code}</b>\n` +
-    `📍 Точка: ${board.spot.name}\n\n` +
+    `📍 Точка: ${escapeHtml(board.spot.name)}\n\n` +
     `Выберите тариф:`,
     { parse_mode: "HTML", reply_markup: kb }
   );

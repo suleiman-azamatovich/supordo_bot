@@ -157,11 +157,15 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
         text = `💳 <b>${board.code}</b> — ожидает оплаты\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
         if (isWalkinPay && rental.seller) {
-          text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b>\n`;
+          text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b> <i>[Админ]</i>\n`;
         }
         if (rental.tariff) {
           const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
+          const originalPrice = rental.tariffOriginalPriceKgs;
           const netPrice = rental.basePriceKgs ?? listPrice;
+          if (originalPrice && originalPrice > listPrice) {
+            text += `🎁 Акция: <s>${fmtPrice(originalPrice)}</s> → <b>${fmtPrice(listPrice)}</b>\n`;
+          }
           if ((rental.discountPercent ?? 0) > 0) {
             text += `💰 Тариф: ${rental.tariff.name} — <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(netPrice)}</b> 🎁 −${rental.discountPercent}%\n`;
           } else {
@@ -197,13 +201,17 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           : `🔵 <b>${board.code}</b> — в аренде\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
         if (isWalkin && rental.seller) {
-          text += `🛡 Выдал: <b>${escapeHtml(rental.seller.name)}</b>\n`;
+          text += `🛡 Выдал: <b>${escapeHtml(rental.seller.name)}</b> <i>[Админ]</i>\n`;
         }
         if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
         if (rental.tariff) {
           const totalMin = rental.tariff.durationMinutes + (rental.extraMinutes ?? 0);
           const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
+          const originalPrice = rental.tariffOriginalPriceKgs;
           const netPrice = rental.basePriceKgs ?? listPrice;
+          if (originalPrice && originalPrice > listPrice) {
+            text += `🎁 Акция: <s>${fmtPrice(originalPrice)}</s> → <b>${fmtPrice(listPrice)}</b>\n`;
+          }
           if ((rental.discountPercent ?? 0) > 0) {
             text += `💰 Тариф: ${rental.tariff.name} — <s>${fmtPrice(listPrice)}</s> → <b>${fmtPrice(netPrice)}</b> 🎁 −${rental.discountPercent}%\n`;
           } else {

@@ -53,3 +53,22 @@ export function fmtDiscount(price: number, percent: number): string {
   const diff = discountAmount(price, p);
   return `${p}% (−${diff} сом)`;
 }
+
+/**
+ * Возвращает эффективную цену тарифа с учётом акции.
+ * Если у тарифа задан `promoPrice` и он меньше `price` — используется promoPrice.
+ * Иначе возвращается обычная `price`.
+ */
+export function tariffEffectivePrice(tariff: { price: number; promoPrice?: number | null }): number {
+  const promo = tariff.promoPrice;
+  if (promo != null && promo >= 0 && promo < tariff.price) return promo;
+  return tariff.price;
+}
+
+/**
+ * Проверка, что у тарифа сейчас активна акция (promoPrice задан и меньше price).
+ */
+export function hasActivePromo(tariff: { price: number; promoPrice?: number | null }): boolean {
+  const promo = tariff.promoPrice;
+  return promo != null && promo >= 0 && promo < tariff.price;
+}
