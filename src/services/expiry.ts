@@ -13,7 +13,8 @@ import { RentalStatus, BoardStatus, Role, PaymentProofKind, PaymentProofStatus }
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
 import { notify, clearOldNotifications } from "./notify";
-import { OVERDUE_RATE_PER_MIN, getEndGraceMs, getUnpaidTimeoutMs } from "./rental";
+import { getEndGraceMs, getUnpaidTimeoutMs } from "./rental";
+import { getOverdueRate } from "./settings";
 import { escapeHtml } from "../ui/helpers";
 
 /**
@@ -113,6 +114,8 @@ export function startExpiryChecker(api: Api) {
           if (!activeIds.has(id)) expiredNotifiedRentals.delete(id);
         }
 
+        const overdueRate = await getOverdueRate();
+
         for (const rental of activeRentals) {
           if (!rental.startAt || !rental.tariff) continue;
 
@@ -175,7 +178,7 @@ export function startExpiryChecker(api: Api) {
                   api,
                   chatId,
                   `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-                  `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${OVERDUE_RATE_PER_MIN} сом/мин). 🏄`
+                  `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${overdueRate} сом/мин). 🏄`
                 );
               } catch (e) {
                 console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
@@ -203,7 +206,7 @@ export function startExpiryChecker(api: Api) {
             expiredNotifiedRentals.delete(rental.id);
 
             console.log(
-              `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) → WAIT_RETURN (просрочка ${OVERDUE_RATE_PER_MIN} сом/мин)`
+              `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) → WAIT_RETURN (просрочка ${overdueRate} сом/мин)`
             );
 
             if (!isWalkin) {
@@ -211,7 +214,7 @@ export function startExpiryChecker(api: Api) {
                 await notify(
                   api,
                   chatId,
-                  `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${OVERDUE_RATE_PER_MIN} сом/мин</b>.\n` +
+                  `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${overdueRate} сом/мин</b>.\n` +
                   `Верните доску ${rental.board.code} как можно скорее!`
                 );
               } catch (e) {
@@ -225,7 +228,7 @@ export function startExpiryChecker(api: Api) {
               `⚠️ Просрочка по аренде #${rental.id}!\n` +
               `Доска: ${rental.board.code}\n` +
               `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
-              `Начисляется ${OVERDUE_RATE_PER_MIN} сом/мин. Подтвердите возврат в разделе «Возвраты».`
+              `Начисляется ${overdueRate} сом/мин. Подтвердите возврат в разделе «Возвраты».`
             );
           }
         }

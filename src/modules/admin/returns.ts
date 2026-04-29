@@ -3,13 +3,14 @@
  *
  * Хендлеры:
  *  - return:confirm — экран подтверждения завершения аренды
- *  - return:complete — выполнение завершения аренды
- *  - return:invoice — завершение + счёт за просрочку
+ *  - return:complete — приём доски без оплаты просрочки (списать)
+ *  - return:cash — walk-in: приём доски + наличный расчёт за просрочку
+ *  - return:invoice — онлайн: приём доски + счёт за просрочку (QR + чек)
  *
- * При завершении аренды:
- *  1. Доска возвращается в статус AVAILABLE
- *  2. Клиенту отправляется итоговый чек
- *  3. Если есть просрочка — создаётся счёт и отправляется QR MBank
+ * При наличии просрочки админ выбирает один из путей закрытия:
+ *  - «Списать без оплаты» — просрочка прощается, extraCost не меняется
+ *  - «Наличные» (walk-in) — extraCost += overdue, расчёт собран на месте
+ *  - «Счёт» (онлайн) — создаётся PaymentProof(OVERDUE) и отправляется QR
  */
 
 import { Composer, InlineKeyboard } from "grammy";
@@ -20,8 +21,9 @@ import {
   escapeHtml,
 } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
+import * as audit from "../../services/audit";
 import { notify, sendMBankQRToChat } from "../../services/notify";
-import { RentalStatus, PaymentProofKind, Role } from "@prisma/client";
+import { RentalStatus, PaymentProofKind, AuditAction, Role } from "@prisma/client";
 
 export const returnsHandlers = new Composer<BotContext>();
 
@@ -72,7 +74,8 @@ returnsHandlers.callbackQuery(/^return:confirm:(\d+)$/, async (ctx) => {
   if (isExpired) {
     const overdueMin = await rentalService.getOverdueMinutes(rental);
     if (overdueMin > 0) {
-      overdueCost = overdueMin * rentalService.OVERDUE_RATE_PER_MIN;
+      const overdueRate = await rentalService.getOverdueRate();
+      overdueCost = overdueMin * overdueRate;
       text += `\n⚠️ <b>Просрочка: ${fmtDuration(overdueMin)} — ${fmtPrice(overdueCost)}</b>\n`;
     }
   }
@@ -80,18 +83,18 @@ returnsHandlers.callbackQuery(/^return:confirm:(\d+)$/, async (ctx) => {
   const kb = new InlineKeyboard();
   const isWalkin = !!rental.sellerUserId;
 
-  if (isWalkin) {
-    // Walk-in: админ принимает доску и собирает наличные на месте
-    if (overdueCost > 0) {
-      text += `\n💵 <b>Собрать наличными: ${fmtPrice(overdueCost)}</b>\n`;
-    }
-    kb.text("✅ Принять доску", `return:complete:${rentalId}`).row();
-  } else {
-    // Онлайн-клиент: стандартный поток
-    kb.text("✅ Принять доску", `return:complete:${rentalId}`).row();
-    if (overdueCost > 0) {
+  if (overdueCost > 0) {
+    // Просрочка есть — админ выбирает: списать или взять оплату
+    text += `\n<i>Выберите способ закрытия просрочки:</i>\n`;
+    kb.text("✅ Принять (списать просрочку)", `return:complete:${rentalId}`).row();
+    if (isWalkin) {
+      kb.text(`💵 Принять (наличные ${fmtPrice(overdueCost)})`, `return:cash:${rentalId}`).row();
+    } else {
       kb.text(`💰 Принять + счёт ${fmtPrice(overdueCost)}`, `return:invoice:${rentalId}`).row();
     }
+  } else {
+    // Нет просрочки — обычное завершение
+    kb.text("✅ Принять доску", `return:complete:${rentalId}`).row();
   }
   kb.text("⬅️ Меню", "back:menu");
 
@@ -99,10 +102,11 @@ returnsHandlers.callbackQuery(/^return:confirm:(\d+)$/, async (ctx) => {
 });
 
 /**
- * Исполнение завершения аренды.
+ * Приём доски без оплаты просрочки.
  *
- * Вызывает completeReturn → освобождает доску, уведомляет клиента.
- * Walk-in: записывает просрочку в extraCost, не шлёт уведомления.
+ * Универсальный путь для walk-in и онлайн: завершает аренду,
+ * освобождает доску. Если была просрочка — она списывается
+ * (extraCost не меняется), в чеке показывается «просрочка списана».
  */
 returnsHandlers.callbackQuery(/^return:complete:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -114,18 +118,20 @@ returnsHandlers.callbackQuery(/^return:complete:(\d+)$/, async (ctx) => {
 
     const isWalkin = !!rental.sellerUserId;
 
-    if (isWalkin && overdueCost > 0) {
-      // Walk-in: записываем просрочку как наличный расчёт
-      await prisma.rental.update({
-        where: { id: rentalId },
-        data: { extraCost: { increment: overdueCost } },
+    // Если была просрочка — фиксируем факт списания в аудите
+    if (overdueCost > 0) {
+      await audit.log(ctx.dbUser!.id, "Rental", rentalId, AuditAction.CLOSE_OVERDUE, {
+        forgiven: true,
+        forgivenAmount: overdueCost,
       });
     }
 
-    const receiptOverdue = isWalkin ? overdueCost : 0;
-    const receipt = await rentalService.getRentalReceipt(rentalId, receiptOverdue);
+    const receipt = await rentalService.getRentalReceipt(rentalId, 0);
+    const forgivenNote = overdueCost > 0
+      ? `\n🎁 Просрочка <b>${fmtPrice(overdueCost)}</b> списана администратором.\n`
+      : "";
 
-    await ctx.editMessageText(`✅ <b>Аренда завершена!</b>\n\n` + receipt, {
+    await ctx.editMessageText(`✅ <b>Аренда завершена!</b>\n${forgivenNote}\n` + receipt, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
         .text("🏄 Доски", "admin:boards")
@@ -134,9 +140,58 @@ returnsHandlers.callbackQuery(/^return:complete:(\d+)$/, async (ctx) => {
 
     if (!isWalkin) {
       await notify(ctx.api, clientTgId,
-        `✅ <b>Аренда завершена!</b>\n\n` + receipt + `\nСпасибо за аренду! 🌊`
+        `✅ <b>Аренда завершена!</b>\n${forgivenNote}\n` + receipt + `\nСпасибо за аренду! 🌊`
       );
     }
+  } catch (e: any) {
+    await ctx.editMessageText(`⚠️ ${e.message}`, {
+      reply_markup: new InlineKeyboard()
+        .text("⬅️ Меню", "back:menu"),
+    });
+  }
+});
+
+/**
+ * Walk-in: приём доски + наличные за просрочку.
+ *
+ * Завершает аренду, увеличивает extraCost на сумму просрочки
+ * (расчёт собран на месте). Клиента не уведомляет — у walk-in нет TG.
+ */
+returnsHandlers.callbackQuery(/^return:cash:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const rentalId = parseInt(ctx.match[1]);
+
+  try {
+    const { overdueCost, rental } =
+      await rentalService.completeReturn(rentalId, ctx.dbUser!.id);
+
+    if (!rental.sellerUserId) {
+      // Защита: для онлайн-клиента наличные не применимы — используется счёт
+      throw new Error("Этот путь доступен только для walk-in аренд.");
+    }
+
+    if (overdueCost > 0) {
+      await prisma.rental.update({
+        where: { id: rentalId },
+        data: { extraCost: { increment: overdueCost } },
+      });
+      await audit.log(ctx.dbUser!.id, "Rental", rentalId, AuditAction.CLOSE_OVERDUE, {
+        paidCash: true,
+        amount: overdueCost,
+      });
+    }
+
+    const receipt = await rentalService.getRentalReceipt(rentalId, overdueCost);
+    const cashNote = overdueCost > 0
+      ? `\n💵 Наличные за просрочку: <b>${fmtPrice(overdueCost)}</b>\n`
+      : "";
+
+    await ctx.editMessageText(`✅ <b>Аренда завершена!</b>\n${cashNote}\n` + receipt, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🏄 Доски", "admin:boards")
+        .text("⬅️ Меню", "back:menu"),
+    });
   } catch (e: any) {
     await ctx.editMessageText(`⚠️ ${e.message}`, {
       reply_markup: new InlineKeyboard()
@@ -179,6 +234,12 @@ returnsHandlers.callbackQuery(/^return:invoice:(\d+)$/, async (ctx) => {
         },
       });
       const overdueProofId = proof.id;
+
+      await audit.log(ctx.dbUser!.id, "Rental", rentalId, AuditAction.CLOSE_OVERDUE, {
+        billed: true,
+        amount: overdueCost,
+        proofId: overdueProofId,
+      });
 
       // Админу — результат
       await ctx.editMessageText(

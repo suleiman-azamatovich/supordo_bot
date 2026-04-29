@@ -287,10 +287,11 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
   if (rental.status === "WAIT_RETURN") {
     const overdue = await rentalService.getOverdueMinutes(rental);
     if (overdue > 0) {
-      const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+      const overdueRate = await rentalService.getOverdueRate();
+      const cost = overdue * overdueRate;
       text += `⚠️ <b>Просрочка</b>\n`;
       text += `   ⏰ ${fmtDuration(overdue)} — <b>${fmtPrice(cost)}</b>\n`;
-      text += `   📊 Тариф: ${rentalService.OVERDUE_RATE_PER_MIN} сом/мин\n\n`;
+      text += `   📊 Тариф: ${overdueRate} сом/мин\n\n`;
       text += `💡 <i>Что можно сделать:</i>\n`;
       text += `   • <b>Продлить</b> — время просрочки вычтется из продления, оплата только за разницу\n`;
       text += `   • <b>Вернуть доску</b> — подойдите на берег, просрочка рассчитается при возврате\n\n`;
@@ -333,7 +334,8 @@ myRentalsHandlers.callbackQuery(/^client:my_detail:(\d+)$/, async (ctx) => {
   if (rental.status === "WAIT_RETURN") {
     const overdue = await rentalService.getOverdueMinutes(rental);
     if (overdue > 0) {
-      const overdueCost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
+      const overdueRate = await rentalService.getOverdueRate();
+      const overdueCost = overdue * overdueRate;
       const unpaidOverdue = overdueCost - payments
         .filter(p => p.kind === "OVERDUE" && p.status === "APPROVED")
         .reduce((sum, p) => sum + p.amount, 0);

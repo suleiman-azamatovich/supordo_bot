@@ -19,6 +19,7 @@ import * as audit from "./audit";
 import { fmtPrice, fmtDuration, fmtDate, escapeHtml } from "../ui/helpers";
 import { resetExpiryTracking } from "./expiry";
 import { applyDiscount, normalizePercent, tariffEffectivePrice } from "./pricing";
+import { getOverdueRate } from "./settings";
 
 
 /** Задержка старта таймера после подтверждения оплаты.
@@ -45,8 +46,7 @@ export function getUnpaidTimeoutMs(): number {
 }
 
 
-/** Ставка просрочки (сом за минуту после грейс-периода) */
-export const OVERDUE_RATE_PER_MIN = 10;
+export { getOverdueRate };
 
 /**
  * Применить скидку к активной аренде.
@@ -221,7 +221,9 @@ export async function createWalkinRental(params: {
   const discountPercent = 0;
   const basePriceKgs = effectivePrice;
 
-  const now = new Date();
+  // Грейс-период старта применяется одинаково ко всем потокам аренды:
+  // у клиента есть 5 минут дойти до доски прежде чем таймер начнёт идти.
+  const startAt = new Date(Date.now() + getStartGraceMs());
   const rental = await prisma.$transaction(async (tx) => {
     // Lock the board row to prevent double-booking (SELECT FOR UPDATE)
     const [board] = await tx.$queryRawUnsafe<{ id: number; status: string }[]>(
@@ -244,7 +246,7 @@ export async function createWalkinRental(params: {
         basePriceKgs,
         discountPercent,
         status: RentalStatus.RENTED,
-        startAt: now,
+        startAt,
       },
     });
 
@@ -595,7 +597,8 @@ export async function closeOverdue(rentalId: number, userId: number) {
     }
 
     // Calculate overdue cost с учётом скидки клиента (снапшот в Rental.discountPercent)
-    const grossCost = overdue * OVERDUE_RATE_PER_MIN;
+    const overdueRate = await getOverdueRate();
+    const grossCost = overdue * overdueRate;
     const overdueCost = applyDiscount(grossCost, rental.discountPercent ?? 0);
 
     const newExtra = (rental.extraMinutes ?? 0) + overdue;
@@ -730,7 +733,8 @@ export async function calculateOverdueCost(rental: {
   discountPercent?: number | null;
 }): Promise<{ overdueMinutes: number; overdueCost: number; overdueCostGross: number }> {
   const overdueMinutes = await getOverdueMinutes(rental);
-  const gross = overdueMinutes * OVERDUE_RATE_PER_MIN;
+  const overdueRate = await getOverdueRate();
+  const gross = overdueMinutes * overdueRate;
   const overdueCost = applyDiscount(gross, rental.discountPercent ?? 0);
   return { overdueMinutes, overdueCost, overdueCostGross: gross };
 }
@@ -854,13 +858,14 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
   // Actual usage & overdue
   const endGraceMs = await getEndGraceMs();
   const endGraceMin = endGraceMs / 60_000;
+  const overdueRate = await getOverdueRate();
   if (rental.startAt && rental.endAt) {
     const actualMin = Math.ceil((rental.endAt.getTime() - rental.startAt.getTime()) / 60_000);
     text += `   Фактическое время: <b>${fmtDuration(actualMin)}</b>\n`;
     const rawOverdue = actualMin - totalPaidMinutes - endGraceMin;
     const overdueAtReturn = Math.max(0, Math.ceil(rawOverdue));
     if (overdueAtReturn > 0) {
-      text += `   ⚠️ Просрочка: <b>${fmtDuration(overdueAtReturn)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+      text += `   ⚠️ Просрочка: <b>${fmtDuration(overdueAtReturn)}</b> (${overdueRate} сом/мин)\n`;
     }
   } else if (rental.startAt) {
     // Rental still active — show current overdue
@@ -870,7 +875,7 @@ export async function getRentalReceipt(rentalId: number, overdueBilled = 0): Pro
     const rawOverdue = actualMin - totalPaidMinutes - endGraceMin;
     const currentOverdue = Math.max(0, Math.ceil(rawOverdue));
     if (currentOverdue > 0) {
-      text += `   ⚠️ Просрочка: <b>${fmtDuration(currentOverdue)}</b> (${OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+      text += `   ⚠️ Просрочка: <b>${fmtDuration(currentOverdue)}</b> (${overdueRate} сом/мин)\n`;
     }
   }
 

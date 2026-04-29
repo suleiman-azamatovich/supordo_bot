@@ -233,11 +233,14 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           text += `\n📵 <i>Клиент без Telegram — связь только лично на точке.</i>\n`;
         }
 
+        // Сумма просрочки — нужна для текста и для кнопок завершения
+        let overdueCost = 0;
         if (rental.status === "WAIT_RETURN") {
-          const overdue = await rentalService.getOverdueMinutes(rental);
-          if (overdue > 0) {
-            const cost = overdue * rentalService.OVERDUE_RATE_PER_MIN;
-            text += `⚠️ <b>Просрочка: ${fmtDuration(overdue)} — ${fmtPrice(cost)}</b> (${rentalService.OVERDUE_RATE_PER_MIN} сом/мин)\n`;
+          const overdueMin = await rentalService.getOverdueMinutes(rental);
+          if (overdueMin > 0) {
+            const overdueRate = await rentalService.getOverdueRate();
+            overdueCost = overdueMin * overdueRate;
+            text += `⚠️ <b>Просрочка: ${fmtDuration(overdueMin)} — ${fmtPrice(overdueCost)}</b> (${overdueRate} сом/мин)\n`;
           }
           if (!isWalkin) {
             kb.text("📩 Напомнить о возврате", `admin:remind_return:${rental.id}`).row();
@@ -251,7 +254,22 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
           ? `🎁 Изменить скидку (−${rental.discountPercent}%)`
           : "🎁 Выдать скидку";
         kb.text(discountBtnLabel, `admin:board_discount:${rental.id}`).row();
-        kb.text("✅ Принять доску", `return:confirm:${rental.id}`).row();
+
+        // Завершение аренды:
+        //  - если есть просрочка → две кнопки прямо в карточке (без промежуточного confirm),
+        //    каждая сразу завершает аренду по своему сценарию
+        //  - иначе → одна кнопка «Принять доску» с экраном подтверждения
+        if (overdueCost > 0) {
+          kb.text("✅ Закрыть без оплаты", `return:complete:${rental.id}`).row();
+          if (isWalkin) {
+            kb.text(`💵 Закрыть с оплатой (наличные ${fmtPrice(overdueCost)})`, `return:cash:${rental.id}`).row();
+          } else {
+            kb.text(`💰 Закрыть с оплатой (счёт ${fmtPrice(overdueCost)})`, `return:invoice:${rental.id}`).row();
+          }
+        } else {
+          kb.text("✅ Принять доску", `return:confirm:${rental.id}`).row();
+        }
+
         if (!isWalkin) {
           kb.text("✉️ Написать клиенту", `admin:board_msg:${rental.id}`).row();
         }
@@ -264,7 +282,11 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
   kb.text("⬅️ К доскам", "admin:boards").row();
   kb.text("⬅️ Меню", "back:menu");
 
-  await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e: any) {
+    if (!e.description?.includes("message is not modified")) throw e;
+  }
 });
 
 /** Блокировка доски (перевод в SERVICE) */
@@ -297,13 +319,14 @@ boardsHandlers.callbackQuery(/^admin:remind_return:(\d+)$/, async (ctx) => {
   });
 
   const overdue = await rentalService.getOverdueMinutes(rental);
-  const cost = overdue > 0 ? overdue * rentalService.OVERDUE_RATE_PER_MIN : 0;
+  const overdueRate = await rentalService.getOverdueRate();
+  const cost = overdue > 0 ? overdue * overdueRate : 0;
 
   let msg = `⏰ <b>Напоминание о возврате</b>\n\n`;
   msg += `Уважаемый клиент, время аренды доски <b>${rental.board.code}</b> истекло.\n`;
   msg += `Пожалуйста, верните доску на точку проката.\n`;
   if (cost > 0) {
-    msg += `\n⚠️ Каждая минута просрочки — <b>${rentalService.OVERDUE_RATE_PER_MIN} сом</b>.`;
+    msg += `\n⚠️ Каждая минута просрочки — <b>${overdueRate} сом</b>.`;
     msg += `\nТекущая просрочка: <b>${fmtDuration(overdue)} — ${fmtPrice(cost)}</b>.`;
   }
   msg += `\n\nСпасибо за понимание! 🙏`;

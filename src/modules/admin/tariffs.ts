@@ -25,6 +25,7 @@ import {
   updateTariff,
   deleteTariff,
 } from "../../services/tariffs";
+import { getOverdueRate, setOverdueRate } from "../../services/settings";
 
 export const tariffsHandlers = new Composer<BotContext>();
 tariffsHandlers.use(guardRole(Role.ADMIN));
@@ -140,6 +141,8 @@ async function renderList(ctx: BotContext) {
     }
   }
 
+  const overdueRate = await getOverdueRate();
+  kb.text(`⚡ Просрочка: ${overdueRate} сом/мин`, "admin:tf_overdue").row();
   kb.text("⬅️ В админ-панель", "admin:dashboard");
 
   await safeEdit(ctx, text, kb);
@@ -148,6 +151,7 @@ async function renderList(ctx: BotContext) {
 tariffsHandlers.callbackQuery("admin:tariffs", async (ctx) => {
   await ctx.answerCallbackQuery();
   resetDraft(ctx);
+  ctx.session.inputMode = undefined;
   await renderList(ctx);
 });
 
@@ -723,6 +727,76 @@ tariffsHandlers.callbackQuery(/^admin:tf_delete_confirm:(\d+)$/, async (ctx) => 
 
   const kb = new InlineKeyboard().text("⬅️ К тарифам", "admin:tariffs");
   await safeEdit(ctx, `✅ <b>Готово.</b>\n\n${note}`, kb);
+});
+
+// ────────────────────────────────────────────────────────────
+// ПИКЕР СТАВКИ ПРОСРОЧКИ
+// ────────────────────────────────────────────────────────────
+
+const OVERDUE_RATE_PRESETS = [5, 10, 15, 20, 25, 30, 50];
+const OVERDUE_RATE_MIN = 1;
+const OVERDUE_RATE_MAX = 1000;
+
+async function renderOverdueRatePicker(ctx: BotContext) {
+  const current = await getOverdueRate();
+
+  const text =
+    `⚡ <b>Ставка просрочки</b>\n\n` +
+    `Текущая: <b>${current} сом/мин</b>\n\n` +
+    `<i>Сколько начисляется клиенту за каждую минуту после истечения оплаченного времени.</i>`;
+
+  const kb = new InlineKeyboard();
+  for (let i = 0; i < OVERDUE_RATE_PRESETS.length; i++) {
+    const r = OVERDUE_RATE_PRESETS[i];
+    const mark = current === r ? "• " : "";
+    kb.text(`${mark}${r} сом`, `admin:tf_overdue_set:${r}`);
+    if ((i + 1) % 4 === 0) kb.row();
+  }
+  kb.row();
+  kb.text("✏️ Вручную", "admin:tf_overdue_custom").row();
+  kb.text("⬅️ К тарифам", "admin:tariffs");
+
+  await safeEdit(ctx, text, kb);
+}
+
+tariffsHandlers.callbackQuery("admin:tf_overdue", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  resetDraft(ctx);
+  await renderOverdueRatePicker(ctx);
+});
+
+tariffsHandlers.callbackQuery(/^admin:tf_overdue_set:(\d+)$/, async (ctx) => {
+  const value = parseInt(ctx.match[1], 10);
+  await setOverdueRate(value);
+  await ctx.answerCallbackQuery(`✅ Ставка: ${value} сом/мин`).catch(() => { });
+  await renderList(ctx);
+});
+
+tariffsHandlers.callbackQuery("admin:tf_overdue_custom", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  ctx.session.inputMode = "overdue_rate";
+
+  const kb = new InlineKeyboard().text("❌ Отмена", "admin:tf_overdue");
+  await safeEdit(
+    ctx,
+    `✏️ <b>Своя ставка просрочки</b>\n\n` +
+    `Пришлите число сом за минуту (${OVERDUE_RATE_MIN}–${OVERDUE_RATE_MAX}).`,
+    kb,
+  );
+});
+
+tariffsHandlers.on("message:text", async (ctx, next) => {
+  if (ctx.session.inputMode !== "overdue_rate") return next();
+
+  const raw = ctx.message.text.trim();
+  const n = parseInt(raw.replace(/\s+/g, ""), 10);
+  if (!Number.isInteger(n) || n < OVERDUE_RATE_MIN || n > OVERDUE_RATE_MAX) {
+    return ctx.reply(`⚠️ Введите целое число от ${OVERDUE_RATE_MIN} до ${OVERDUE_RATE_MAX}.`);
+  }
+
+  await setOverdueRate(n);
+  ctx.session.inputMode = undefined;
+  await renderList(ctx);
 });
 
 // ────────────────────────────────────────────────────────────

@@ -56,8 +56,8 @@ async function main() {
     console.log(`Cashier user created/updated: id=${cashier.id}, tgId=${cashier.tgId}`);
   }
 
-  // Create 10 boards with permanent sequential codes SUP-01..SUP-10
-  const boards = Array.from({ length: 10 }, (_, i) => ({
+  // Create 20 boards with permanent sequential codes SUP-01..SUP-20
+  const boards = Array.from({ length: 20 }, (_, i) => ({
     code: `SUP-${String(i + 1).padStart(2, "0")}`,
     title: `SUP-${String(i + 1).padStart(2, "0")}`,
     spotId: spot.id,

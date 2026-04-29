@@ -46,10 +46,14 @@ async function main() {
 
   // Error handler
   bot.catch((err) => {
-    // Игнорируем просроченные callback-запросы (нажатые пока бот был выключен)
     const desc = (err.error as { description?: string })?.description ?? "";
-    if (typeof desc === "string" && desc.includes("query is too old")) {
-      return;
+    if (typeof desc === "string") {
+      // Просроченные callback-запросы (нажатые пока бот был выключен)
+      if (desc.includes("query is too old")) return;
+      // Повторное editMessageText с тем же содержимым (двойной клик, refresh без изменений)
+      if (desc.includes("message is not modified")) return;
+      // Сообщение удалено пользователем до edit
+      if (desc.includes("message to edit not found")) return;
     }
     console.error("Bot error:", err);
   });
