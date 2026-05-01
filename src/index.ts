@@ -19,6 +19,7 @@ import { adminModule } from "./modules/admin/index";
 import { cashierModule } from "./modules/cashier/index";
 import { paymentActionsHandlers } from "./modules/shared/payment-actions";
 import { startExpiryChecker } from "./services/expiry";
+import { startNotificationsCleanup } from "./services/notify";
 import { prisma } from "./db/prisma";
 import { Role } from "@prisma/client";
 
@@ -80,11 +81,15 @@ async function main() {
 
   // Запуск автоматического завершения истёкших аренд
   const stopExpiryChecker = startExpiryChecker(bot.api);
+  // Очистка устаревших уведомлений (раз в час, не в expiry tick)
+  const stopNotificationsCleanup = startNotificationsCleanup();
   // Периодическая очистка in-memory кешей middleware (защита от утечек памяти)
   const stopMiddlewareMaintenance = startMiddlewareMaintenance();
 
-  // Run with concurrent update processing
-  let runner = run(bot);
+  // Run with concurrent update processing.
+  // silent: true — глушим многострочные стек-трейсы getUpdates (ECONNRESET и т.п.).
+  // Runner всё равно сам ретраит. Liveness виден через [expiry] heartbeat.
+  let runner = run(bot, { runner: { silent: true } });
   console.log("✅ Bot started (runner mode)");
 
   let shuttingDown = false;
@@ -115,6 +120,7 @@ async function main() {
       console.error("Runner stop error:", e);
     }
     stopExpiryChecker();
+    stopNotificationsCleanup();
     stopMiddlewareMaintenance();
     try {
       await prisma.$disconnect();

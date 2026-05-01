@@ -15,6 +15,7 @@ import { Composer, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import { invalidateUserCache } from "../../bot/middleware";
+import { invalidatePaymentNotifyCache } from "../client/helpers";
 import * as audit from "../../services/audit";
 import { Role, AuditAction } from "@prisma/client";
 import { config } from "../../bot/config";
@@ -57,6 +58,7 @@ rolesHandlers.command("add_admin", async (ctx) => {
 
   await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "promote" });
   invalidateUserCache(tgId);
+  invalidatePaymentNotifyCache();
   await ctx.reply(`✅ Пользователь tg:${user.tgId} назначен администратором.`);
 });
 
@@ -91,6 +93,7 @@ rolesHandlers.command("remove_admin", async (ctx) => {
     data: { role: Role.CLIENT },
   });
   invalidateUserCache(tgId);
+  invalidatePaymentNotifyCache();
 
   await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "demote" });
   await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли администратора.`);
@@ -150,6 +153,7 @@ rolesHandlers.command("add_cashier", async (ctx) => {
 
   await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "promote_cashier" });
   invalidateUserCache(tgId);
+  invalidatePaymentNotifyCache();
   await ctx.reply(`✅ Пользователь tg:${user.tgId} назначен кассиром.`);
 });
 
@@ -180,6 +184,7 @@ rolesHandlers.command("remove_cashier", async (ctx) => {
     data: { role: Role.CLIENT },
   });
   invalidateUserCache(tgId);
+  invalidatePaymentNotifyCache();
 
   await audit.log(ctx.dbUser.id, "User", user.id, AuditAction.ROLE_CHANGED, { tgId: tgId.toString(), action: "demote_cashier" });
   await ctx.reply(`✅ Пользователь tg:${tgId} снят с роли кассира.`);

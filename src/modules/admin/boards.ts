@@ -31,7 +31,9 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const page = parseInt(ctx.match?.[2] ?? "1");
 
+  const spotId = ctx.dbUser?.spotId ?? undefined;
   const boards = await prisma.board.findMany({
+    where: spotId ? { spotId } : undefined,
     include: {
       rentals: {
         where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },

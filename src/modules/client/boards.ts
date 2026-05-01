@@ -25,11 +25,17 @@ boardsHandlers.callbackQuery(/^client:boards(:(\d+))?$/, async (ctx) => {
   const page = parseInt(ctx.match?.[2] ?? "1");
   const myTgId = ctx.dbUser?.tgId;
 
+  const spotId = ctx.dbUser?.spotId ?? undefined;
   const boards = await prisma.board.findMany({
+    where: spotId ? { spotId } : undefined,
     include: {
       rentals: {
         where: { status: { in: ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN", "RENTED", "WAIT_RETURN"] } },
-        include: { user: true },
+        select: {
+          id: true,
+          status: true,
+          user: { select: { tgId: true } },
+        },
         orderBy: { createdAt: "desc" },
         take: 1,
       },

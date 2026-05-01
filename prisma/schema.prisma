@@ -202,6 +202,8 @@ model Rental {
   @@index([boardId])
   @@index([userId])
   @@index([startAt])
+  @@index([createdAt])
+  @@index([status, createdAt])
 }
 
 model PaymentProof {
@@ -222,6 +224,8 @@ model PaymentProof {
 
   @@index([status])
   @@index([kind, refId])
+  @@index([createdAt])
+  @@index([kind, status, createdAt])
 }
 
 model AuditLog {
@@ -249,6 +253,7 @@ model Notification {
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId, isRead])
+  @@index([createdAt])
 }
 
 model Setting {

@@ -5,7 +5,15 @@
       "Bash(wmic process:*)",
       "Bash(powershell:*)",
       "Bash(npx prisma:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git stash *)",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Get-Process *)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

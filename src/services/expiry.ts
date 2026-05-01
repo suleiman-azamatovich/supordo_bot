@@ -7,12 +7,16 @@
  * 3. Уведомление об истечении времени + начало грейс-периода
  * 4. Перевод в WAIT_RETURN после грейса (начисление просрочки)
  *
+ * Архитектура: вся работа с БД идёт внутри одной короткой транзакции
+ * (advisory-xact lock + фактические апдейты). Telegram-уведомления
+ * собираются в очередь и отправляются параллельно ПОСЛЕ коммита,
+ * чтобы не держать соединение БД во время медленных сетевых вызовов.
+ *
  * @module
  */
-import { RentalStatus, BoardStatus, Role, PaymentProofKind, PaymentProofStatus } from "@prisma/client";
+import { RentalStatus, BoardStatus, Role, PaymentProofKind, PaymentProofStatus, Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { Api } from "grammy";
-import { notify, clearOldNotifications } from "./notify";
 import { getEndGraceMs, getUnpaidTimeoutMs } from "./rental";
 import { getOverdueRate } from "./settings";
 import { escapeHtml } from "../ui/helpers";
@@ -29,6 +33,13 @@ const warnedRentals = new Set<number>();
 const expiredNotifiedRentals = new Set<number>();
 
 /**
+ * Очередь Telegram-сообщений, собираемая внутри транзакции
+ * и отправляемая после её коммита (чтобы не держать соединение БД).
+ */
+type ClientNotif = { userId: number; tgId: bigint; text: string };
+type SellerNotif = { spotId: number; text: string };
+
+/**
  * Сбросить трекинг уведомлений для аренды.
  *
  * Вызывается при продлении с чистым временем — чтобы expiry checker
@@ -37,6 +48,11 @@ const expiredNotifiedRentals = new Set<number>();
 export function resetExpiryTracking(rentalId: number) {
   warnedRentals.delete(rentalId);
   expiredNotifiedRentals.delete(rentalId);
+}
+
+/** Удалить HTML-теги перед сохранением текста уведомления в БД */
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, "");
 }
 
 /**
@@ -54,19 +70,22 @@ export function startExpiryChecker(api: Api) {
   async function tick() {
     if (running) {
       // Предыдущий tick ещё не завершился — пропускаем,
-      // чтобы не копить параллельные тяжёлые операции и не плодить memory pressure.
+      // чтобы не копить параллельные тяжёлые операции.
       return;
     }
     running = true;
+
+    const clientNotifs: ClientNotif[] = [];
+    const sellerNotifs: SellerNotif[] = [];
+
     try {
-      // Транзакционный advisory lock гарантирует авто-освобождение в конце транзакции,
-      // даже если коннект из пула сменится. Если другой инстанс держит lock — пропускаем tick.
-      await prisma.$transaction(async (tx) => {
+      const acquired = await prisma.$transaction(async (tx) => {
+        // Транзакционный advisory lock авто-освобождается на коммите.
         const [lockResult] = await tx.$queryRawUnsafe<{ acquired: boolean }[]>(
           `SELECT pg_try_advisory_xact_lock($1) AS acquired`, EXPIRY_LOCK_ID
         );
         if (!lockResult?.acquired) {
-          return; // Другой инстанс уже выполняет tick
+          return false; // другой инстанс уже выполняет tick
         }
 
         const now = new Date();
@@ -78,19 +97,12 @@ export function startExpiryChecker(api: Api) {
             ? `${Math.round(END_GRACE_MS / 60_000)} мин`
             : `${Math.round(END_GRACE_MS / 1_000)} сек`;
 
-        // --- Cancel unpaid rentals that have been stuck for too long ---
-        await cancelStaleRentals(api, now, UNPAID_TIMEOUT_MS);
+        await processStaleRentals(tx, now, UNPAID_TIMEOUT_MS, clientNotifs);
+        await processStaleExtensions(tx, now, UNPAID_TIMEOUT_MS, clientNotifs);
 
-        // --- Auto-reject stale extension payments ---
-        await rejectStaleExtensions(api, now, UNPAID_TIMEOUT_MS);
-
-        const activeRentals = await prisma.rental.findMany({
+        const activeRentals = await tx.rental.findMany({
           where: {
-            status: {
-              in: [
-                RentalStatus.RENTED,
-              ],
-            },
+            status: RentalStatus.RENTED,
             startAt: { not: null },
             tariffId: { not: null },
           },
@@ -101,11 +113,25 @@ export function startExpiryChecker(api: Api) {
           },
         });
 
-        if (activeRentals.length > 0) {
-          console.log(`[expiry] Активных аренд: ${activeRentals.length}`);
-        }
+        const [totalBoards, freeBoards, rentedBoards, serviceBoards, waitPayment, waitAdmin, waitReturn] = await Promise.all([
+          tx.board.count(),
+          tx.board.count({ where: { status: BoardStatus.AVAILABLE } }),
+          tx.board.count({ where: { status: BoardStatus.RENTED } }),
+          tx.board.count({ where: { status: BoardStatus.SERVICE } }),
+          tx.rental.count({
+            where: { status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT] } },
+          }),
+          tx.rental.count({ where: { status: RentalStatus.WAIT_ADMIN } }),
+          tx.rental.count({ where: { status: RentalStatus.WAIT_RETURN } }),
+        ]);
+        const ts = now.toLocaleTimeString("ru-RU", { hour12: false });
+        console.log(
+          `[${ts}] аренды: активных ${activeRentals.length}, ждут возврата ${waitReturn} | ` +
+          `доски: ${rentedBoards}/${totalBoards} занято (свободно ${freeBoards}, сервис ${serviceBoards}) | ` +
+          `ожидают: оплату ${waitPayment}, подтверждение ${waitAdmin}`
+        );
 
-        // --- Prune in-memory Set'ов от мёртвых ID (утечка памяти) ---
+        // --- Prune in-memory Set'ов от мёртвых ID ---
         const activeIds = new Set(activeRentals.map((r) => r.id));
         for (const id of warnedRentals) {
           if (!activeIds.has(id)) warnedRentals.delete(id);
@@ -123,8 +149,6 @@ export function startExpiryChecker(api: Api) {
           const durationMs = totalMinutes * 60_000;
           const expiresAt = new Date(rental.startAt.getTime() + durationMs);
           const remainingMs = expiresAt.getTime() - now.getTime();
-          const chatId = Number(rental.user.tgId);
-
           const isWalkin = !!rental.sellerUserId;
 
           // --- Предупреждение: осталось ≤ 10% времени ---
@@ -140,30 +164,25 @@ export function startExpiryChecker(api: Api) {
               `[expiry] ⚠️ Аренда #${rental.id} (${rental.board.code}) — осталось ${remainMin} мин`
             );
 
-            // Walk-in: клиент без Telegram, уведомляем только админов
             if (!isWalkin) {
-              try {
-                await notify(
-                  api,
-                  chatId,
+              clientNotifs.push({
+                userId: rental.user.id,
+                tgId: rental.user.tgId,
+                text:
                   `⚠️ Время аренды доски ${rental.board.code} почти истекло!\n` +
-                  `Осталось менее ${remainMin} мин. Пожалуйста, возвращайтесь к берегу.`
-                );
-              } catch (e) {
-                console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
-              }
+                  `Осталось менее ${remainMin} мин. Пожалуйста, возвращайтесь к берегу.`,
+              });
             }
 
-            // Уведомить продавцов
-            await notifySellers(
-              api,
-              rental.spotId,
-              `⚠️ Доска ${rental.board.code} — время почти истекло (${remainMin} мин)\n` +
-              `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}`
-            );
+            sellerNotifs.push({
+              spotId: rental.spotId,
+              text:
+                `⚠️ Доска ${rental.board.code} — время почти истекло (${remainMin} мин)\n` +
+                `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}`,
+            });
           }
 
-          // --- Время вышло — уведомляем, но даём 10мин грейс ---
+          // --- Время вышло — уведомляем, но даём грейс ---
           if (now >= expiresAt && !expiredNotifiedRentals.has(rental.id)) {
             expiredNotifiedRentals.add(rental.id);
             warnedRentals.delete(rental.id);
@@ -173,32 +192,29 @@ export function startExpiryChecker(api: Api) {
             );
 
             if (!isWalkin) {
-              try {
-                await notify(
-                  api,
-                  chatId,
+              clientNotifs.push({
+                userId: rental.user.id,
+                tgId: rental.user.tgId,
+                text:
                   `⏰ Время аренды доски ${rental.board.code} истекло!\n` +
-                  `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${overdueRate} сом/мин). 🏄`
-                );
-              } catch (e) {
-                console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
-              }
+                  `У вас есть ещё <b>${graceLabel}</b>, чтобы вернуть доску без штрафа. После этого начнётся просрочка (${overdueRate} сом/мин). 🏄`,
+              });
             }
 
-            await notifySellers(
-              api,
-              rental.spotId,
-              `⏰ Время аренды #${rental.id} истекло!\n` +
-              `Доска: ${rental.board.code}\n` +
-              `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
-              `Бесплатное время на возврат: ${graceLabel}`
-            );
+            sellerNotifs.push({
+              spotId: rental.spotId,
+              text:
+                `⏰ Время аренды #${rental.id} истекло!\n` +
+                `Доска: ${rental.board.code}\n` +
+                `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
+                `Бесплатное время на возврат: ${graceLabel}`,
+            });
           }
 
           // --- Грейс истёк — переводим в WAIT_RETURN ---
           const graceEnd = new Date(expiresAt.getTime() + END_GRACE_MS);
           if (now >= graceEnd) {
-            await prisma.rental.update({
+            await tx.rental.update({
               where: { id: rental.id },
               data: { status: RentalStatus.WAIT_RETURN },
             });
@@ -210,31 +226,35 @@ export function startExpiryChecker(api: Api) {
             );
 
             if (!isWalkin) {
-              try {
-                await notify(
-                  api,
-                  chatId,
+              clientNotifs.push({
+                userId: rental.user.id,
+                tgId: rental.user.tgId,
+                text:
                   `⚠️ Бесплатное время на возврат истекло! Начисляется просрочка: <b>${overdueRate} сом/мин</b>.\n` +
-                  `Верните доску ${rental.board.code} как можно скорее!`
-                );
-              } catch (e) {
-                console.error(`[expiry] Ошибка уведомления клиента ${chatId}:`, e);
-              }
+                  `Верните доску ${rental.board.code} как можно скорее!`,
+              });
             }
 
-            await notifySellers(
-              api,
-              rental.spotId,
-              `⚠️ Просрочка по аренде #${rental.id}!\n` +
-              `Доска: ${rental.board.code}\n` +
-              `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
-              `Начисляется ${overdueRate} сом/мин. Подтвердите возврат в разделе «Возвраты».`
-            );
+            sellerNotifs.push({
+              spotId: rental.spotId,
+              text:
+                `⚠️ Просрочка по аренде #${rental.id}!\n` +
+                `Доска: ${rental.board.code}\n` +
+                `Клиент: ${escapeHtml(rental.clientName ?? "Telegram-клиент")}\n` +
+                `Начисляется ${overdueRate} сом/мин. Подтвердите возврат в разделе «Возвраты».`,
+            });
           }
         }
-        // Clean up old notifications periodically
-        await clearOldNotifications();
-      }, { timeout: 25_000 });
+
+        return true;
+      }, { timeout: 10_000 });
+
+      if (!acquired) return;
+
+      // Telegram-вызовы и bulk-вставка Notification ВНЕ транзакции
+      if (clientNotifs.length > 0 || sellerNotifs.length > 0) {
+        await dispatchNotifications(api, clientNotifs, sellerNotifs);
+      }
     } catch (err) {
       console.error("[expiry] Ошибка:", err);
     } finally {
@@ -244,31 +264,87 @@ export function startExpiryChecker(api: Api) {
 
   void tick();
   const intervalId = setInterval(() => void tick(), INTERVAL_MS);
+  intervalId.unref?.();
   console.log("⏰ Expiry checker started (every 30s)");
 
   return () => clearInterval(intervalId);
 }
 
 /**
- * Уведомить всех админов точки проката.
- * @param spotId - ID точки (Spot)
+ * Разослать собранные уведомления параллельно.
+ * Не держит транзакцию БД, безопасно для медленных Telegram-вызовов.
  */
-async function notifySellers(api: Api, spotId: number, text: string) {
-  try {
+async function dispatchNotifications(
+  api: Api,
+  clientNotifs: ClientNotif[],
+  sellerNotifs: SellerNotif[],
+) {
+  // 1. Резолвим продавцов одной выборкой по всем уникальным spotId
+  const uniqueSpotIds = [...new Set(sellerNotifs.map((n) => n.spotId))];
+  const sellersBySpot = new Map<number, { id: number; tgId: bigint }[]>();
+  if (uniqueSpotIds.length > 0) {
     const sellers = await prisma.user.findMany({
-      where: { role: Role.ADMIN, spotId },
+      where: { role: Role.ADMIN, spotId: { in: uniqueSpotIds } },
+      select: { id: true, tgId: true, spotId: true },
     });
-    await Promise.all(sellers.map((s) => notify(api, s.tgId, text).catch((e) => console.error('[expiry] Ошибка уведомления продавца:', e))));
-  } catch (e) {
-    console.error("[expiry] Ошибка уведомления продавцов:", e);
+    for (const s of sellers) {
+      if (s.spotId == null) continue;
+      const arr = sellersBySpot.get(s.spotId) ?? [];
+      arr.push({ id: s.id, tgId: s.tgId });
+      sellersBySpot.set(s.spotId, arr);
+    }
   }
+
+  // 2. Bulk-вставка строк Notification (одной командой createMany)
+  const notifRows: { userId: number; text: string }[] = [];
+  for (const n of clientNotifs) {
+    notifRows.push({ userId: n.userId, text: stripHtml(n.text) });
+  }
+  for (const n of sellerNotifs) {
+    const sellers = sellersBySpot.get(n.spotId) ?? [];
+    const stripped = stripHtml(n.text);
+    for (const s of sellers) {
+      notifRows.push({ userId: s.id, text: stripped });
+    }
+  }
+  if (notifRows.length > 0) {
+    try {
+      await prisma.notification.createMany({ data: notifRows });
+    } catch (e) {
+      console.error("[expiry] Ошибка bulk-вставки уведомлений:", e);
+    }
+  }
+
+  // 3. Параллельная отправка Telegram-сообщений
+  const jobs: Promise<unknown>[] = [];
+  for (const n of clientNotifs) {
+    jobs.push(
+      api.sendMessage(Number(n.tgId), n.text, { parse_mode: "HTML" })
+        .catch((e) => console.error(`[expiry] sendMessage(${n.tgId}):`, e?.description ?? e?.message ?? e))
+    );
+  }
+  for (const n of sellerNotifs) {
+    const sellers = sellersBySpot.get(n.spotId) ?? [];
+    for (const s of sellers) {
+      jobs.push(
+        api.sendMessage(Number(s.tgId), n.text, { parse_mode: "HTML" })
+          .catch((e) => console.error(`[expiry] sendMessage seller(${s.tgId}):`, e?.description ?? e?.message ?? e))
+      );
+    }
+  }
+  await Promise.allSettled(jobs);
 }
 
 /** Cancel rentals stuck in CREATED/WAIT_PAYMENT for longer than timeout */
-async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number) {
+async function processStaleRentals(
+  tx: Prisma.TransactionClient,
+  now: Date,
+  UNPAID_TIMEOUT_MS: number,
+  clientNotifs: ClientNotif[],
+) {
   const cutoff = new Date(now.getTime() - UNPAID_TIMEOUT_MS);
 
-  const staleRentals = await prisma.rental.findMany({
+  const staleRentals = await tx.rental.findMany({
     where: {
       status: { in: [RentalStatus.CREATED, RentalStatus.WAIT_PAYMENT] },
       createdAt: { lt: cutoff },
@@ -276,48 +352,49 @@ async function cancelStaleRentals(api: Api, now: Date, UNPAID_TIMEOUT_MS: number
     include: { board: true, user: true },
   });
 
+  if (staleRentals.length === 0) return;
+
+  const ids = staleRentals.map((r) => r.id);
+  const boardIds = staleRentals.map((r) => r.boardId);
+
+  await tx.rental.updateMany({
+    where: { id: { in: ids } },
+    data: { status: RentalStatus.CANCELLED, endAt: now },
+  });
+  await tx.board.updateMany({
+    where: { id: { in: boardIds } },
+    data: { status: BoardStatus.AVAILABLE },
+  });
+  await tx.paymentProof.updateMany({
+    where: {
+      refId: { in: ids },
+      kind: { in: [PaymentProofKind.RENTAL, PaymentProofKind.EXTENSION] },
+      status: PaymentProofStatus.SUBMITTED,
+    },
+    data: { status: PaymentProofStatus.REJECTED },
+  });
+
+  const minutes = UNPAID_TIMEOUT_MS / 60_000;
   for (const rental of staleRentals) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        await tx.rental.update({
-          where: { id: rental.id },
-          data: { status: RentalStatus.CANCELLED, endAt: now },
-        });
-        await tx.board.update({
-          where: { id: rental.boardId },
-          data: { status: BoardStatus.AVAILABLE },
-        });
-        // Отклоняем незакрытые чеки оплаты (аренда + продление)
-        await tx.paymentProof.updateMany({
-          where: {
-            refId: rental.id,
-            kind: { in: [PaymentProofKind.RENTAL, PaymentProofKind.EXTENSION] },
-            status: PaymentProofStatus.SUBMITTED,
-          },
-          data: { status: PaymentProofStatus.REJECTED },
-        });
-      });
-
-      console.log(`[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) отменена — не оплачена за ${UNPAID_TIMEOUT_MS / 60_000} мин`);
-
-      try {
-        await notify(
-          api,
-          Number(rental.user.tgId),
-          `❌ Аренда доски <b>${rental.board.code}</b> автоматически отменена — не была оплачена в течение ${UNPAID_TIMEOUT_MS / 60_000} минут.`
-        );
-      } catch { }
-    } catch (e) {
-      console.error(`[expiry] Ошибка отмены stale аренды #${rental.id}:`, e);
-    }
+    console.log(`[expiry] ⏰ Аренда #${rental.id} (${rental.board.code}) отменена — не оплачена за ${minutes} мин`);
+    clientNotifs.push({
+      userId: rental.user.id,
+      tgId: rental.user.tgId,
+      text: `❌ Аренда доски <b>${rental.board.code}</b> автоматически отменена — не была оплачена в течение ${minutes} минут.`,
+    });
   }
 }
 
 /** Авто-отклонение неоплаченных продлений (EXTENSION) по таймауту */
-async function rejectStaleExtensions(api: Api, now: Date, UNPAID_TIMEOUT_MS: number) {
+async function processStaleExtensions(
+  tx: Prisma.TransactionClient,
+  now: Date,
+  UNPAID_TIMEOUT_MS: number,
+  clientNotifs: ClientNotif[],
+) {
   const cutoff = new Date(now.getTime() - UNPAID_TIMEOUT_MS);
 
-  const staleProofs = await prisma.paymentProof.findMany({
+  const staleProofs = await tx.paymentProof.findMany({
     where: {
       kind: PaymentProofKind.EXTENSION,
       status: PaymentProofStatus.SUBMITTED,
@@ -326,30 +403,27 @@ async function rejectStaleExtensions(api: Api, now: Date, UNPAID_TIMEOUT_MS: num
     include: { user: true },
   });
 
+  if (staleProofs.length === 0) return;
+
+  const proofIds = staleProofs.map((p) => p.id);
+  const rentalIds = [...new Set(staleProofs.map((p) => p.refId))];
+
+  await tx.paymentProof.updateMany({
+    where: { id: { in: proofIds } },
+    data: { status: PaymentProofStatus.REJECTED },
+  });
+  await tx.rental.updateMany({
+    where: { id: { in: rentalIds } },
+    data: { pendingExtraMinutes: null, pendingExtraAmount: null },
+  });
+
+  const minutes = UNPAID_TIMEOUT_MS / 60_000;
   for (const proof of staleProofs) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        await tx.paymentProof.update({
-          where: { id: proof.id },
-          data: { status: PaymentProofStatus.REJECTED },
-        });
-        await tx.rental.update({
-          where: { id: proof.refId },
-          data: { pendingExtraMinutes: null, pendingExtraAmount: null },
-        });
-      });
-
-      console.log(`[expiry] ⏰ Оплата продления #${proof.id} (аренда #${proof.refId}) отклонена — не подтверждена за ${UNPAID_TIMEOUT_MS / 60_000} мин`);
-
-      try {
-        await notify(
-          api,
-          Number(proof.user.tgId),
-          `❌ Запрос на продление аренды #${proof.refId} автоматически отклонён — оплата не подтверждена в течение ${UNPAID_TIMEOUT_MS / 60_000} минут.`
-        );
-      } catch { }
-    } catch (e) {
-      console.error(`[expiry] Ошибка отклонения stale продления #${proof.id}:`, e);
-    }
+    console.log(`[expiry] ⏰ Оплата продления #${proof.id} (аренда #${proof.refId}) отклонена — не подтверждена за ${minutes} мин`);
+    clientNotifs.push({
+      userId: proof.user.id,
+      tgId: proof.user.tgId,
+      text: `❌ Запрос на продление аренды #${proof.refId} автоматически отклонён — оплата не подтверждена в течение ${minutes} минут.`,
+    });
   }
 }

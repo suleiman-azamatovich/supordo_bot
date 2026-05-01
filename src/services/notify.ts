@@ -107,3 +107,31 @@ export async function clearOldNotifications() {
     where: { createdAt: { lt: cutoff } },
   });
 }
+
+/**
+ * Запустить периодическую очистку старых уведомлений.
+ * Раз в час (а не на каждом expiry tick — там это делалось каждые 30с
+ * под транзакцией, что вешало пул соединений).
+ */
+export function startNotificationsCleanup(): () => void {
+  const HOUR_MS = 60 * 60_000;
+  // Прогрев — чистим один раз через минуту после старта
+  const warmup = setTimeout(() => {
+    void clearOldNotifications().catch((e) =>
+      console.error("[notify-cleanup] Ошибка очистки:", e)
+    );
+  }, 60_000);
+  warmup.unref?.();
+
+  const intervalId = setInterval(() => {
+    void clearOldNotifications().catch((e) =>
+      console.error("[notify-cleanup] Ошибка очистки:", e)
+    );
+  }, HOUR_MS);
+  intervalId.unref?.();
+
+  return () => {
+    clearTimeout(warmup);
+    clearInterval(intervalId);
+  };
+}

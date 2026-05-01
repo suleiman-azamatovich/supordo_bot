@@ -105,6 +105,35 @@ export async function handleRentalByQR(ctx: BotContext, boardCode: string) {
 }
 
 /**
+ * In-memory кеш получателей платёжных уведомлений.
+ * Уменьшает количество DB-запросов: на каждый платёж раньше шёл findMany
+ * по всем ADMIN+CASHIER. Теперь — раз в TTL.
+ */
+let cachedPaymentNotifyTargets: { id: number; tgId: bigint }[] | null = null;
+let cachedPaymentNotifyAt = 0;
+const PAYMENT_NOTIFY_TTL_MS = 60_000; // 1 минута
+
+async function getPaymentNotifyTargets(): Promise<{ id: number; tgId: bigint }[]> {
+  const now = Date.now();
+  if (cachedPaymentNotifyTargets && now - cachedPaymentNotifyAt < PAYMENT_NOTIFY_TTL_MS) {
+    return cachedPaymentNotifyTargets;
+  }
+  const list = await prisma.user.findMany({
+    where: { role: { in: [Role.ADMIN, Role.CASHIER] } },
+    select: { id: true, tgId: true },
+  });
+  cachedPaymentNotifyTargets = list;
+  cachedPaymentNotifyAt = now;
+  return list;
+}
+
+/** Сбросить кеш получателей платежных уведомлений (после изменения ролей) */
+export function invalidatePaymentNotifyCache() {
+  cachedPaymentNotifyTargets = null;
+  cachedPaymentNotifyAt = 0;
+}
+
+/**
  * Уведомляет всех админов о новом платеже.
  *
  * Для каждого админа:
@@ -151,35 +180,41 @@ export async function notifyAdminsNewPayment(ctx: BotContext, proofId: number) {
   const kb = new InlineKeyboard()
     .text("💰 Открыть кассу", "cashier:payments");
 
-  const adminsAndCashiers = await prisma.user.findMany({
-    where: { role: { in: [Role.ADMIN, Role.CASHIER] } },
-  });
-  await Promise.all(adminsAndCashiers.map(async (user) => {
-    await prisma.notification.create({
-      data: {
-        userId: user.id,
-        text: `💳 Новая оплата #${proof.id} от ${proof.user.name} — ${fmtPrice(proof.amount)}`,
-      },
-    });
+  const adminsAndCashiers = await getPaymentNotifyTargets();
 
-    // Push-сообщение отправляем и админам, и кассирам — оба могут подтверждать оплаты
+  // Bulk-вставка строк колокольчика — одной командой вместо N
+  const bellText = `💳 Новая оплата #${proof.id} от ${proof.user.name} — ${fmtPrice(proof.amount)}`;
+  if (adminsAndCashiers.length > 0) {
     try {
-      if (proof.fileId) {
-        await ctx.api.sendPhoto(Number(user.tgId), proof.fileId, {
-          caption: text,
-          parse_mode: "HTML",
-          reply_markup: kb,
-        });
-      } else {
-        await ctx.api.sendMessage(Number(user.tgId), text, {
-          parse_mode: "HTML",
-          reply_markup: kb,
-        });
-      }
+      await prisma.notification.createMany({
+        data: adminsAndCashiers.map((u) => ({ userId: u.id, text: bellText })),
+      });
     } catch (e) {
-      console.error(`[notify] Не удалось отправить push ${user.tgId}:`, e);
+      console.error("[notify] bulk createMany уведомлений:", e);
     }
-  }));
+  }
+
+  // Push-сообщения шлём параллельно, но через allSettled — одна ошибка не валит остальных
+  await Promise.allSettled(
+    adminsAndCashiers.map(async (user) => {
+      try {
+        if (proof.fileId) {
+          await ctx.api.sendPhoto(Number(user.tgId), proof.fileId, {
+            caption: text,
+            parse_mode: "HTML",
+            reply_markup: kb,
+          });
+        } else {
+          await ctx.api.sendMessage(Number(user.tgId), text, {
+            parse_mode: "HTML",
+            reply_markup: kb,
+          });
+        }
+      } catch (e) {
+        console.error(`[notify] Не удалось отправить push ${user.tgId}:`, e);
+      }
+    })
+  );
 }
 
 /**
