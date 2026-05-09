@@ -96,7 +96,7 @@ async function main() {
 
   /** Авто-перезапуск runner при неожиданной остановке (сетевые сбои ECONNRESET и т.п.) */
   const watchRunner = () => {
-    runner.task().then(() => {
+    runner.task()?.then(() => {
       if (!shuttingDown) {
         console.error("[runner] Stopped unexpectedly, restarting in 5s...");
         setTimeout(() => { runner = run(bot); watchRunner(); }, 5000);

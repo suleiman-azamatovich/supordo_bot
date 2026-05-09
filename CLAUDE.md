@@ -41,17 +41,20 @@ src/
 │   ├── context.ts        # BotContext, SessionData, InputMode types
 │   └── middleware.ts     # authMiddleware, chatCleanup, guardRole, rateLimit
 ├── modules/
-│   ├── client/           # Composer — no guard (CLIENT + ADMIN)
-│   ├── admin/            # Composer — guardRole(ADMIN)
-│   ├── cashier/          # Composer — guardRole(CASHIER)
+│   ├── client/           # boards, rental, my-rentals, notifications, chat, start, helpers
+│   ├── admin/            # boards, tariffs, payments, returns, extensions, walkin, reports, roles, dashboard, chat
+│   ├── cashier/          # Composer — guardRole(CASHIER, ADMIN); единый интерфейс кассы
 │   └── shared/
-│       └── payment-actions.ts  # Shared ADMIN+CASHIER payment handlers
+│       └── payment-actions.ts  # Общие ADMIN+CASHIER хэндлеры одобрения/отклонения чеков
 ├── services/
-│   ├── rental.ts         # createRental, approveRental, extendRental…
-│   ├── pricing.ts        # applyDiscount, tariffEffectivePrice, fmtDiscount
+│   ├── rental.ts         # createRental, approveRental, extendRental, acceptReturn…
+│   ├── payment.ts        # PaymentProof: одобрение/отклонение (RENTAL и OVERDUE)
+│   ├── pricing.ts        # applyDiscount, tariffEffectivePrice, fmtDiscount, normalizePercent
+│   ├── discounts.ts      # Персональные скидки клиента (User.discountPercent)
+│   ├── tariffs.ts        # CRUD тарифов (soft delete при наличии аренд)
 │   ├── settings.ts       # getOverdueRate / setOverdueRate (Setting table, cached)
-│   ├── expiry.ts         # Background checker every 30s
-│   ├── notify.ts         # Send Telegram notifications
+│   ├── expiry.ts         # Background checker every 30s (advisory lock)
+│   ├── notify.ts         # Telegram notifications + cleanup устаревших
 │   ├── reports.ts        # Revenue reports + CSV
 │   └── audit.ts          # audit.log(actor, entity, id, action, meta)
 ├── ui/
@@ -66,11 +69,20 @@ src/
 
 ```typescript
 sequentialize(chatId)  →  session  →  authMiddleware  →  rateLimitMiddleware
-  →  chatCleanupMiddleware  →  clientModule  →  paymentActionsGuarded
-  →  cashierModule  →  adminModule
+  →  chatCleanupMiddleware  →  bot.catch(...)  →  clientModule
+  →  paymentActionsGuarded (ADMIN|CASHIER)  →  cashierModule  →  adminModule
 ```
 
 `authMiddleware` must run before any module — it populates `ctx.dbUser` and `ctx.session`. Never use `ctx.session` without `ctx.dbUser` being set first.
+
+`bot.catch` глушит ожидаемые ошибки Telegram API: `query is too old`, `message is not modified`, `message to edit not found` — не логируем как error.
+
+**Background tasks** (стартуют в `main()`, останавливаются по SIGINT/SIGTERM):
+- `startExpiryChecker(bot.api)` — авто-завершение истёкших аренд (30s tick).
+- `startNotificationsCleanup()` — чистка устаревших уведомлений (1×/час).
+- `startMiddlewareMaintenance()` — чистка in-memory кешей middleware (rate-limit, etc).
+
+Runner запускается с `silent: true` (глушим ECONNRESET stack-trace) и авто-перезапускается при крахе через `watchRunner()`.
 
 ## Key Patterns
 
