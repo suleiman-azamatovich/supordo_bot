@@ -130,27 +130,29 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
 
     if (!user) return;
 
-    // Авто-повышение до CASHIER если tgId указан в CASHIER_TG_IDS
-    if (user.role === Role.CLIENT && config.CASHIER_TG_IDS.includes(tgId.toString())) {
-      // Назначаем spotId по умолчанию (первая точка) — нужен для walk-in/boards
-      const defaultSpotId = user.spotId ?? (await prisma.spot.findFirst({ orderBy: { id: "asc" } }))?.id ?? null;
-      await prisma.user.update({
-        where: { tgId },
-        data: { role: Role.CASHIER, ...(defaultSpotId && !user.spotId ? { spotId: defaultSpotId } : {}) },
-      });
-      user.role = Role.CASHIER;
-      if (defaultSpotId && !user.spotId) user.spotId = defaultSpotId;
-    }
+    // Авто-промоушен по env-конфигу.
+    // ADMIN имеет приоритет над CASHIER (если tgId в обоих списках).
+    // Также добиваем spotId если его не было — нужен для walk-in/boards/expiry.
+    const targetRole: Role | null = config.ADMIN_TG_IDS.includes(tgId.toString())
+      ? Role.ADMIN
+      : config.CASHIER_TG_IDS.includes(tgId.toString())
+        ? Role.CASHIER
+        : null;
 
-    // Авто-повышение до ADMIN если tgId указан в ADMIN_TG_IDS
-    if (user.role !== Role.ADMIN && config.ADMIN_TG_IDS.includes(tgId.toString())) {
+    const needsRoleUpdate = targetRole !== null && user.role !== targetRole && user.role === Role.CLIENT;
+    const needsSpotUpdate = targetRole !== null && user.spotId == null;
+
+    if (needsRoleUpdate || needsSpotUpdate) {
       const defaultSpotId = user.spotId ?? (await prisma.spot.findFirst({ orderBy: { id: "asc" } }))?.id ?? null;
-      await prisma.user.update({
-        where: { tgId },
-        data: { role: Role.ADMIN, ...(defaultSpotId && !user.spotId ? { spotId: defaultSpotId } : {}) },
-      });
-      user.role = Role.ADMIN;
-      if (defaultSpotId && !user.spotId) user.spotId = defaultSpotId;
+      const updateData: { role?: Role; spotId?: number } = {};
+      if (needsRoleUpdate) updateData.role = targetRole;
+      if (needsSpotUpdate && defaultSpotId) updateData.spotId = defaultSpotId;
+
+      if (Object.keys(updateData).length > 0) {
+        await prisma.user.update({ where: { tgId }, data: updateData });
+        if (updateData.role) user.role = updateData.role;
+        if (updateData.spotId) user.spotId = updateData.spotId;
+      }
     }
 
     cached = {

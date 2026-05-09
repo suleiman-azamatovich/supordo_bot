@@ -21,7 +21,13 @@
       "Bash(ssh *)",
       "Bash(MSYS_NO_PATHCONV=1 docker exec subordo_db *)",
       "Bash(tar -czf - --exclude=node_modules --exclude=dist --exclude=.git --exclude=.env.example .)",
-      "Bash(scp root@168.231.124.150:/opt/subordo_bot/.env .env.new)"
+      "Bash(scp root@168.231.124.150:/opt/subordo_bot/.env .env.new)",
+      "Bash(git push *)",
+      "Bash(tar -czf /tmp/subordo-update.tar.gz src/bot/middleware.ts src/modules/admin/index.ts src/modules/admin/boards.ts src/modules/admin/dashboard.ts src/modules/admin/returns.ts src/modules/client/chat.ts src/modules/client/rental.ts src/services/expiry.ts src/ui/helpers.ts src/ui/keyboards.ts .env.example CLAUDE.md src/index.ts)",
+      "Read(//tmp/**)",
+      "Bash(scp /tmp/subordo-update.tar.gz root@168.231.124.150:/tmp/)",
+      "Bash(tar -czf /tmp/subordo-update2.tar.gz src/bot/middleware.ts src/modules/admin/boards.ts)",
+      "Bash(scp /tmp/subordo-update2.tar.gz root@168.231.124.150:/tmp/)"
     ]
   }
 }

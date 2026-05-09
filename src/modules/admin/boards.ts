@@ -60,7 +60,7 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
     else active++;
   }
 
-  const paged = paginate(boards, page, 5);
+  const paged = paginate(boards, page, 10);
 
   let text = `🏄 <b>Доски</b> (${totalBoards})\n\n`;
   text += `✅ — свободна (${available})\n`;
@@ -98,7 +98,8 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
     } else {
       icon = "📅";
     }
-    kb.text(`${icon} ${b.code}${timeInfo}`, `admin:board_detail:${b.id}`).row();
+    // Пробрасываем текущую страницу — чтобы из карточки можно было вернуться сюда
+    kb.text(`${icon} ${b.code}${timeInfo}`, `admin:board_detail:${b.id}:${paged.page}`).row();
   }
 
   addPaginationRow(kb, paged.page, paged.totalPages, "admin:boards:");
@@ -120,9 +121,11 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
  *  - SERVICE → разблокировать
  *  - RENTED → принять возврат, продлить, завершить
  */
-boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
+boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const boardId = parseInt(ctx.match[1]);
+  // Страница списка, с которой пришли — чтобы вернуть на неё кнопкой «К доскам»
+  const fromPage = ctx.match[2] ? parseInt(ctx.match[2]) : undefined;
 
   const board = await prisma.board.findUniqueOrThrow({
     where: { id: boardId },
@@ -281,7 +284,9 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
     }
   }
 
-  kb.text("⬅️ К доскам", "admin:boards").row();
+  // Возврат на ту же страницу списка, с которой пришли
+  const backToBoardsCb = fromPage ? `admin:boards:${fromPage}` : "admin:boards";
+  kb.text("⬅️ К доскам", backToBoardsCb).row();
   kb.text("⬅️ Меню", "back:menu");
 
   try {
