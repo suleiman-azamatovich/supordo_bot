@@ -71,8 +71,7 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
 
   const kb = new InlineKeyboard();
   const now = new Date();
-  // Кнопки досок — по 2 в ряд (компактный layout)
-  paged.items.forEach((b, idx) => {
+  for (const b of paged.items) {
     const rental = b.rentals[0];
     const hasWaitReturn = rental?.status === "WAIT_RETURN";
     let icon: string, timeInfo = "";
@@ -100,10 +99,8 @@ boardsHandlers.callbackQuery(/^admin:boards(:(\d+))?$/, async (ctx) => {
       icon = "📅";
     }
     // Пробрасываем текущую страницу — чтобы из карточки можно было вернуться сюда
-    kb.text(`${icon} ${b.code}${timeInfo}`, `admin:board_detail:${b.id}:${paged.page}`);
-    if (idx % 2 === 1) kb.row();
-  });
-  if (paged.items.length % 2 === 1) kb.row();
+    kb.text(`${icon} ${b.code}${timeInfo}`, `admin:board_detail:${b.id}:${paged.page}`).row();
+  }
 
   addPaginationRow(kb, paged.page, paged.totalPages, "admin:boards:");
   kb.row().text("🔄 Обновить", `admin:boards:${paged.page}`).text("⬅️ Меню", "back:menu");
