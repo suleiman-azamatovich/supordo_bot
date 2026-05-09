@@ -43,41 +43,41 @@ boardsHandlers.callbackQuery(/^client:boards(:(\d+))?$/, async (ctx) => {
     orderBy: { code: "asc" },
   });
 
-  const paged = paginate(boards, page);
+  const paged = paginate(boards, page, 10);
   const freeCount = boards.filter((b) => b.status === BoardStatus.AVAILABLE).length;
 
   let text = `🏄 <b>Доски</b> (свободных: ${freeCount} из ${boards.length})\n\n`;
+  text += `Условные обозначения:\n`;
+  text += `✅ свободна  ·  🔵 в аренде  ·  ⏰ ждёт возврата\n`;
+  text += `💳 ожидает оплаты  ·  🔧 обслуживание  ·  👈 ваша\n\n`;
   text += `👇 Нажмите на свободную доску (✅), чтобы арендовать.\n`;
   text += `Или отсканируйте 📷 QR-код на доске.\n`;
 
   const kb = new InlineKeyboard();
-  for (const b of paged.items) {
+  // Кнопки досок — по 2 в ряд (компактный layout)
+  paged.items.forEach((b, idx) => {
     const rental = b.rentals[0];
     const isMine = rental && myTgId ? rental.user.tgId === myTgId : false;
-    const mineTag = isMine ? " 👈 моя" : "";
+    const mineTag = isMine ? " 👈" : "";
 
-    let icon: string, label: string;
-    if (b.status === BoardStatus.AVAILABLE) {
-      icon = "✅"; label = "свободна";
-    } else if (b.status === BoardStatus.SERVICE) {
-      icon = "🔧"; label = "на обслуживании";
-    } else if (rental?.status === "WAIT_RETURN") {
-      icon = "⏰"; label = "ожидает возврата";
-    } else if (rental && ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) {
-      icon = "💳"; label = "ожидает оплаты";
-    } else if (b.status === BoardStatus.RENTED) {
-      icon = "🔵"; label = "в аренде";
-    } else {
-      icon = "📅"; label = "забронирована";
-    }
-    if (b.status === BoardStatus.AVAILABLE) {
-      kb.text(`${icon} ${b.code} — ${label}`, `client:rent_board:${b.code}`).row();
-    } else if (isMine && rental) {
-      kb.text(`${icon} ${b.code} — ${label}${mineTag}`, `client:my_detail:${rental.id}`).row();
-    } else {
-      kb.text(`${icon} ${b.code} — ${label}${mineTag}`, `client:board_info:${b.id}`).row();
-    }
-  }
+    let icon: string;
+    if (b.status === BoardStatus.AVAILABLE) icon = "✅";
+    else if (b.status === BoardStatus.SERVICE) icon = "🔧";
+    else if (rental?.status === "WAIT_RETURN") icon = "⏰";
+    else if (rental && ["CREATED", "WAIT_PAYMENT", "WAIT_ADMIN"].includes(rental.status)) icon = "💳";
+    else if (b.status === BoardStatus.RENTED) icon = "🔵";
+    else icon = "📅";
+
+    const label = `${icon} ${b.code}${mineTag}`;
+    let cb: string;
+    if (b.status === BoardStatus.AVAILABLE) cb = `client:rent_board:${b.code}`;
+    else if (isMine && rental) cb = `client:my_detail:${rental.id}`;
+    else cb = `client:board_info:${b.id}`;
+
+    kb.text(label, cb);
+    if (idx % 2 === 1) kb.row();
+  });
+  if (paged.items.length % 2 === 1) kb.row();
   addPaginationRow(kb, paged.page, paged.totalPages, "client:boards:");
   kb.row().text("🔄 Обновить", `client:boards:${paged.page}`).text("⬅️ Меню", "back:menu");
   kb.row().text("🧹 Убрать лишнее", "clear:chat");
