@@ -100,7 +100,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
     const proofId = ctx.session.clientChat.proofId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
+      const admins = await prisma.user.findMany({ where: { role: { in: [Role.ADMIN, Role.CASHIER] } } });
       for (const admin of admins) {
         try {
           await ctx.api.sendMessage(
@@ -132,7 +132,7 @@ chatHandlers.on("message:text", async (ctx, next) => {
     const rentalId = ctx.session.clientChat.rentalId;
     const userName = ctx.dbUser?.name ?? "Клиент";
     try {
-      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
+      const admins = await prisma.user.findMany({ where: { role: { in: [Role.ADMIN, Role.CASHIER] } } });
       await Promise.all(admins.map((admin) =>
         ctx.api.sendMessage(
           Number(admin.tgId),

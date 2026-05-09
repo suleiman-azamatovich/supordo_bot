@@ -132,8 +132,25 @@ export async function authMiddleware(ctx: BotContext, next: NextFunction) {
 
     // Авто-повышение до CASHIER если tgId указан в CASHIER_TG_IDS
     if (user.role === Role.CLIENT && config.CASHIER_TG_IDS.includes(tgId.toString())) {
-      await prisma.user.update({ where: { tgId }, data: { role: Role.CASHIER } });
+      // Назначаем spotId по умолчанию (первая точка) — нужен для walk-in/boards
+      const defaultSpotId = user.spotId ?? (await prisma.spot.findFirst({ orderBy: { id: "asc" } }))?.id ?? null;
+      await prisma.user.update({
+        where: { tgId },
+        data: { role: Role.CASHIER, ...(defaultSpotId && !user.spotId ? { spotId: defaultSpotId } : {}) },
+      });
       user.role = Role.CASHIER;
+      if (defaultSpotId && !user.spotId) user.spotId = defaultSpotId;
+    }
+
+    // Авто-повышение до ADMIN если tgId указан в ADMIN_TG_IDS
+    if (user.role !== Role.ADMIN && config.ADMIN_TG_IDS.includes(tgId.toString())) {
+      const defaultSpotId = user.spotId ?? (await prisma.spot.findFirst({ orderBy: { id: "asc" } }))?.id ?? null;
+      await prisma.user.update({
+        where: { tgId },
+        data: { role: Role.ADMIN, ...(defaultSpotId && !user.spotId ? { spotId: defaultSpotId } : {}) },
+      });
+      user.role = Role.ADMIN;
+      if (defaultSpotId && !user.spotId) user.spotId = defaultSpotId;
     }
 
     cached = {
@@ -240,11 +257,38 @@ export async function chatCleanupMiddleware(ctx: BotContext, next: NextFunction)
 
 /**
  * Guard factory — restricts handler to specified roles.
+ *
+ * При отсутствии прав отвечает «Нет доступа» и НЕ вызывает next().
+ * Используется для модулей, целиком принадлежащих определённой роли.
  */
 export function guardRole(...roles: Role[]) {
   return async (ctx: BotContext, next: NextFunction) => {
     if (!ctx.dbUser || !roles.includes(ctx.dbUser.role)) {
       await ctx.reply("⛔ У вас нет доступа к этой функции.");
+      return;
+    }
+    await next();
+  };
+}
+
+/**
+ * Мягкий guard для смешанных модулей.
+ *
+ * Блокирует только callback-кнопки (на которые есть конкретный handler);
+ * для message:text/photo/etc просто пропускает через next(),
+ * чтобы не перехватывать сообщения, адресованные другим композерам ниже.
+ *
+ * Используется в adminOnlyComposer — внутри живут только admin-callbacks,
+ * но composer не должен мешать message-хендлерам кассира из staffComposer.
+ */
+export function guardCallbackRole(...roles: Role[]) {
+  return async (ctx: BotContext, next: NextFunction) => {
+    if (!ctx.callbackQuery) return next();
+    if (!ctx.dbUser || !roles.includes(ctx.dbUser.role)) {
+      await ctx.answerCallbackQuery({
+        text: "⛔ Доступ только для администратора",
+        show_alert: true,
+      });
       return;
     }
     await next();

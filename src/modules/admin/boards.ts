@@ -18,7 +18,7 @@ import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import {
   fmtPrice, fmtDuration, fmtDate,
-  escapeHtml, paginate, addPaginationRow,
+  escapeHtml, paginate, addPaginationRow, staffRoleLabel,
 } from "../../ui/helpers";
 import * as rentalService from "../../services/rental";
 import { notify } from "../../services/notify";
@@ -159,7 +159,7 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
         text = `💳 <b>${board.code}</b> — ожидает оплаты\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
         if (isWalkinPay && rental.seller) {
-          text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b> <i>[Админ]</i>\n`;
+          text += `🛡 Оформил: <b>${escapeHtml(rental.seller.name)}</b> <i>[${staffRoleLabel(rental.seller.role)}]</i>\n`;
         }
         if (rental.tariff) {
           const listPrice = rental.tariffPriceKgs ?? rental.tariff.price;
@@ -199,11 +199,11 @@ boardsHandlers.callbackQuery(/^admin:board_detail:(\d+)$/, async (ctx) => {
       } else {
         const isWalkin = !!rental.sellerUserId;
         text = isWalkin
-          ? `👤 <b>${board.code}</b> — выдана админом\n\n`
+          ? `👤 <b>${board.code}</b> — выдана на месте\n\n`
           : `🔵 <b>${board.code}</b> — в аренде\n\n`;
         text += `👤 Клиент: <b>${client}</b>\n`;
         if (isWalkin && rental.seller) {
-          text += `🛡 Выдал: <b>${escapeHtml(rental.seller.name)}</b> <i>[Админ]</i>\n`;
+          text += `🛡 Выдал: <b>${escapeHtml(rental.seller.name)}</b> <i>[${staffRoleLabel(rental.seller.role)}]</i>\n`;
         }
         if (rental.startAt) text += `⏱ Старт: ${fmtDate(rental.startAt)}\n`;
         if (rental.tariff) {

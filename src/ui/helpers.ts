@@ -1,5 +1,13 @@
 import { InlineKeyboard } from "grammy";
+import { Role } from "@prisma/client";
 import { config } from "../bot/config";
+
+/** Краткое название роли сотрудника для UI */
+export function staffRoleLabel(role: Role | null | undefined): string {
+  if (role === Role.ADMIN) return "Админ";
+  if (role === Role.CASHIER) return "Кассир";
+  return "Сотрудник";
+}
 
 export const PAGE_SIZE = 5;
 

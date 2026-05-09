@@ -284,7 +284,7 @@ async function dispatchNotifications(
   const sellersBySpot = new Map<number, { id: number; tgId: bigint }[]>();
   if (uniqueSpotIds.length > 0) {
     const sellers = await prisma.user.findMany({
-      where: { role: Role.ADMIN, spotId: { in: uniqueSpotIds } },
+      where: { role: { in: [Role.ADMIN, Role.CASHIER] }, spotId: { in: uniqueSpotIds } },
       select: { id: true, tgId: true, spotId: true },
     });
     for (const s of sellers) {

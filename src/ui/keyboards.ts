@@ -5,10 +5,12 @@ import { Role } from "@prisma/client";
  * Главное меню бота.
  *
  * Кнопки зависят от роли пользователя:
- * - CLIENT: доски, мои аренды, уведомления, помощь
- * - ADMIN: уведомления, доски, проверка оплат, история транзакций, отчёты, переключение режима
- * - CASHIER: проверка оплат, уведомления
+ * - CLIENT: доски, мои аренды, история, уведомления, помощь
+ * - CASHIER: уведомления, доски, касса, walk-in, история оплат
+ * - ADMIN: уведомления, доски, касса, история транзакций, отчёты, тарифы
  *
+ * Кассир имеет доступ к операционным функциям (выдача/приём досок, оплаты,
+ * walk-in, продления) — но не к стратегическим (отчёты, тарифы, роли).
  */
 export function mainMenuKeyboard(role: Role): InlineKeyboard {
   const kb = new InlineKeyboard();
@@ -20,16 +22,18 @@ export function mainMenuKeyboard(role: Role): InlineKeyboard {
   }
 
   if (role === Role.CASHIER) {
-    kb.text("💳 Проверка оплат", "cashier:payments").row();
-    kb.text("🔔 Уведомления", "cashier:notifications").row();
+    kb.text("🔔 Уведомления", "cashier:notifications").text("🏄 Доски", "admin:boards").row();
+    kb.text("💳 Касса", "cashier:payments").row();
+    kb.text("➕ Выдать доску (walk-in)", "seller:walkin").row();
+    kb.text("🕒 История оплат", "cashier:history").row();
   }
 
   if (role === Role.ADMIN) {
     kb.text("🔔 Уведомления", "admin:notifications").text("🏄 Доски", "admin:boards").row();
-    kb.text("💳 Проверка оплат", "admin:cashbox").row();
+    kb.text("💳 Касса", "admin:cashbox").row();
+    kb.text("➕ Выдать доску (walk-in)", "seller:walkin").row();
     kb.text("🕒 История транзакций", "admin:transactions").row();
-    kb.text("📊 Отчёты", "admin:reports").row();
-    kb.text("🏷️ Тарифы", "admin:tariffs").row();
+    kb.text("📊 Отчёты", "admin:reports").text("🏷️ Тарифы", "admin:tariffs").row();
   }
 
   kb.text("🧹 Убрать лишнее", "clear:chat").row();

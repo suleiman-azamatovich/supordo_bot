@@ -260,9 +260,9 @@ returnsHandlers.callbackQuery(/^return:invoice:(\d+)$/, async (ctx) => {
       );
       await sendMBankQRToChat(ctx.api, Number(clientTgId), overdueCost, rentalId);
 
-      // Уведомляем остальных админов
-      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
-      await Promise.all(admins.filter(a => a.id !== ctx.dbUser!.id).map(admin =>
+      // Уведомляем остальной staff (админов и кассиров)
+      const staff = await prisma.user.findMany({ where: { role: { in: [Role.ADMIN, Role.CASHIER] } } });
+      await Promise.all(staff.filter(a => a.id !== ctx.dbUser!.id).map(admin =>
         ctx.api.sendMessage(
           Number(admin.tgId),
           `⏰ <b>Счёт за просрочку #${overdueProofId}</b>\n\n` +

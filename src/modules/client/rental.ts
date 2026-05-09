@@ -273,7 +273,7 @@ rentalHandlers.on("message:photo", async (ctx) => {
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const userName = escapeHtml(ctx.dbUser?.name ?? "Клиент");
     try {
-      const admins = await prisma.user.findMany({ where: { role: Role.ADMIN } });
+      const admins = await prisma.user.findMany({ where: { role: { in: [Role.ADMIN, Role.CASHIER] } } });
       await Promise.all(admins.map((admin) =>
         ctx.api.sendPhoto(Number(admin.tgId), fileId, {
           caption: `📎 <b>${userName}</b> (оплата #${proofId}) отправил(а) фото`,

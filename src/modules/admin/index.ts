@@ -1,30 +1,26 @@
 /**
  * Админский модуль — точка сборки.
  *
- * Объединяет все административные подмодули в один Composer.
- * Защищён guardRole(Role.ADMIN) — все хендлеры внутри доступны только админам.
+ * Внутри две группы сабмодулей с разными правами:
  *
- * Подмодули:
- *  - dashboard — панель управления, уведомления, переключение тест/работа
- *  - payments — одобрение/отклонение оплат
- *  - returns — возвраты и принятие досок (включая бывший seller.ts)
- *  - boards — управление досками (блок/разблок, детали)
- *  - reports — отчёты (сегодня, неделя, тарифы, история)
- *  - extensions — продления аренды и закрытие просрочки
- *  - chat — переписка админ ↔ клиент
- *  - walkin — выдача доски клиенту на месте (walk-in)
- *  - roles — управление ролями (/add_admin, /remove_admin, MBank QR)
+ *  • staffComposer (ADMIN + CASHIER) — операционные функции:
+ *      boards, walkin, returns, extensions, chat, roles
+ *      (roles содержит admin-only команды, но они проверяют роль внутри;
+ *      composer допускается до message:photo для MBank QR).
  *
- * Порядок регистрации важен для message:text / message:photo хендлеров:
- *  1. Сначала callback-хендлеры (dashboard, payments, returns, boards, reports, extensions)
- *  2. Затем chat.ts (текстовый хендлер для пересылки, вызывает next() если не в чате)
- *  3. Затем walkin.ts (текстовый хендлер для имени клиента, вызывает next())
- *  4. Последним roles.ts (фото-хендлер для MBank QR + команды)
+ *  • adminOnlyComposer (ADMIN) — стратегические функции:
+ *      dashboard, payments (старый список), reports, tariffs.
+ *      Здесь висит мягкий guardCallbackRole — он блокирует только
+ *      callback-кнопки чужой роли, но пропускает message:* через next().
+ *
+ * Порядок message:text/photo:
+ *   chat (staff) → walkin (staff) → roles (staff, photo).
+ * Каждый message-хендлер вызывает next(), если состояние не его.
  */
 
 import { Composer } from "grammy";
 import { BotContext } from "../../bot/context";
-import { guardRole } from "../../bot/middleware";
+import { guardRole, guardCallbackRole } from "../../bot/middleware";
 import { Role } from "@prisma/client";
 import { dashboardHandlers } from "./dashboard";
 import { paymentsHandlers } from "./payments";
@@ -39,21 +35,30 @@ import { tariffsHandlers } from "./tariffs";
 
 export const adminModule = new Composer<BotContext>();
 
-// Все хендлеры внутри требуют роль ADMIN
-adminModule.use(guardRole(Role.ADMIN));
+/* ────────────────── Staff (ADMIN + CASHIER) ────────────────── */
+const staffComposer = new Composer<BotContext>();
+staffComposer.use(guardRole(Role.ADMIN, Role.CASHIER));
 
-// Callback-хендлеры (порядок не критичен — каждый слушает свой паттерн)
-adminModule.use(dashboardHandlers);
-adminModule.use(paymentsHandlers);
-adminModule.use(returnsHandlers);
-adminModule.use(boardsHandlers);
-adminModule.use(reportsHandlers);
-adminModule.use(extensionsHandlers);
+// Callback-хендлеры
+staffComposer.use(boardsHandlers);
+staffComposer.use(returnsHandlers);
+staffComposer.use(extensionsHandlers);
 
-// Тарифы — регистрируем до chat/walkin
-adminModule.use(tariffsHandlers);
+// Message-хендлеры (порядок: chat → walkin → roles)
+staffComposer.use(chatHandlers);     // message:text: пересылка в чате, иначе next()
+staffComposer.use(walkinHandlers);   // callbacks + message:text для имени клиента
+staffComposer.use(rolesHandlers);    // команды (внутри проверяют ADMIN) + message:photo (MBank QR)
 
-// Хендлеры сообщений (порядок КРИТИЧЕН — chat → walkin → roles)
-adminModule.use(chatHandlers);       // message:text: пересылка в чате, иначе next()
-adminModule.use(walkinHandlers);     // message:text: имя клиента для walk-in, иначе next()
-adminModule.use(rolesHandlers);      // message:photo: MBank QR, иначе next() + команды
+adminModule.use(staffComposer);
+
+/* ───────────────────── Admin-only ──────────────────────────── */
+const adminOnlyComposer = new Composer<BotContext>();
+// Мягкий guard: блокирует только admin-only callbacks от не-админов
+adminOnlyComposer.use(guardCallbackRole(Role.ADMIN));
+
+adminOnlyComposer.use(dashboardHandlers);
+adminOnlyComposer.use(paymentsHandlers);
+adminOnlyComposer.use(reportsHandlers);
+adminOnlyComposer.use(tariffsHandlers);
+
+adminModule.use(adminOnlyComposer);

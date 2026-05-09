@@ -17,7 +17,7 @@ import { Composer, GrammyError, InlineKeyboard } from "grammy";
 import { BotContext } from "../../bot/context";
 import { prisma } from "../../db/prisma";
 import {
-  fmtDuration, fmtPrice, escapeHtml, paginate, addPaginationRow,
+  fmtDuration, fmtPrice, escapeHtml, paginate, addPaginationRow, staffRoleLabel,
 } from "../../ui/helpers";
 import * as audit from "../../services/audit";
 import { getNotifications, markNotificationsRead } from "../../services/notify";
@@ -456,7 +456,7 @@ dashboardHandlers.callbackQuery(/^admin:tx:(\d+)$/, async (ctx) => {
       text += `🎁 <b>Акция:</b> <s>${fmtPrice(tariffPriceMeta)}</s> → <b>${fmtPrice(promoPriceMeta)}</b>\n`;
     }
     text += `💵 <b>Сумма:</b> ${fmtPrice(basePrice)}\n`;
-    text += `🛡 <b>Выдал:</b> ${escapeHtml(log.actor.name)} <i>[Админ]</i>\n`;
+    text += `🛡 <b>Выдал:</b> ${escapeHtml(log.actor.name)} <i>[${staffRoleLabel(log.actor.role)}]</i>\n`;
 
     const rental = await prisma.rental.findUnique({
       where: { id: log.entityId },
